@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RELIC - Nerve Axis, 1998</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #07070b; color: #9fb4d0;
+               font: 13px/1.5 Consolas, monospace; }
+  #wrap { display: flex; flex-direction: column; align-items: center;
+          min-height: 100vh; justify-content: center; gap: 12px; }
+  canvas { background: #000; display: block; image-rendering: pixelated;
+           border: 1px solid #1b2030; }
+  #bar { color: #6b7a90; }
+  #bar b { color: #c8d6e8; font-weight: normal; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="canvas" width="1280" height="720" tabindex="-1"></canvas>
+  <div id="bar"><b>[</b> and <b>]</b> step parts &nbsp;
+    <b>space</b> pause &nbsp; <b>q</b> quit &nbsp;
+    <span id="status">loading...</span></div>
+</div>
+<script type="text/javascript">
+  var canvas = document.getElementById('canvas');
+  var Module = {
+    canvas: canvas,
+    print: function (t) { console.log(t); },
+    printErr: function (t) { console.error(t); },
+    setStatus: function (t) {
+      document.getElementById('status').textContent = t || '';
+    }
+  };
+  /* SDL wants the keyboard, and a canvas only gets it when focused. */
+  canvas.addEventListener('click', function () { canvas.focus(); });
+  window.addEventListener('load', function () { canvas.focus(); });
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

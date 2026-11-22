@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RELIC - Nerve Axis, 1998</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #07070b; color: #8fa3bd;
+               font: 13px/1.6 Consolas, "Courier New", monospace; }
+  a { color: #6cf; }
+  a:hover { color: #9df; }
+  #wrap { display: flex; flex-direction: column; align-items: center;
+          gap: 10px; padding: 16px 12px 40px; }
+  /* THE CANVAS MUST HAVE NO CSS SIZE AT ALL, and that is the whole
+     trick. Emscripten_CreateWindow sets the canvas to 1x1, measures
+     the element, and if CSS held it bigger than that it takes the CSS
+     box as the window and DISCARDS the -w/-h it was given. Leave the
+     size off and the probe sees 1x1, so SDL sizes the canvas from
+     -w/-h - and a canvas without a CSS size lays out at its own
+     width and height attributes, which is what SDL just set. One
+     number then decides both the picture and the glass. Give it a
+     "width" here, even 100%, and the arguments stop meaning
+     anything. The stage hugs it so the overlay lines up. */
+  #stage { position: relative; line-height: 0; display: inline-block; }
+  canvas { background: #000; display: block; outline: 0;
+           image-rendering: pixelated; image-rendering: crisp-edges; }
+  #start { position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+           display: flex; align-items: center; justify-content: center;
+           background: rgba(0,0,0,.6); cursor: pointer;
+           text-align: center; line-height: 1.6; }
+  #start .big { color: #dbe6f2; font-size: 20px; letter-spacing: 2px; }
+  #start .small { color: #8fa3bd; margin-top: 8px; }
+  #opts { margin: 14px 0 12px; }
+  #opts label { display: block; color: #c8d6e8; cursor: pointer;
+                padding: 2px 0; }
+  #go { font: inherit; color: #dbe6f2; background: #16203a;
+        border: 1px solid #2b3550;
+        padding: 6px 22px; cursor: pointer; letter-spacing: 2px; }
+  #go:hover { background: #1d2a4a; }
+  #audio { display: flex; align-items: center; gap: 18px;
+           max-width: 1280px; width: 100%; color: #8fa3bd; }
+  #audio label { display: flex; align-items: center; gap: 6px;
+                 cursor: pointer; }
+  #audio input[type=range] { width: 160px; vertical-align: middle; }
+  #volnum { color: #c8d6e8; min-width: 4em; }
+  #bar { color: #6b7a90; max-width: 1280px; width: 100%; }
+  #bar b { color: #c8d6e8; font-weight: normal; }
+  #bar .t { color: #c8d6e8; }
+  /* Empty unless the demo says something, and it only speaks up when
+     a frame cannot reach the window. */
+  #log { color: #d08a8a; max-width: 1280px; width: 100%; margin: 0;
+         white-space: pre-wrap; font: inherit; }
+  #about { max-width: 1280px; width: 100%; }
+  #about h1 { font-size: 15px; color: #c8d6e8; margin: 10px 0 10px;
+              letter-spacing: 1px; }
+  #about h2 { font-size: 13px; color: #c8d6e8; margin: 22px 0 6px;
+              letter-spacing: 1px; }
+  #about p { margin: 0 0 10px; }
+  #about table { border-collapse: collapse; margin: 0 0 10px; }
+  #about td { padding: 1px 14px 1px 0; vertical-align: top; }
+  #about td.k { color: #cc6; white-space: nowrap; }
+  #about .note { color: #6b7a90; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="canvas" width="1280" height="720" tabindex="-1"></canvas>
+    <div id="start"><div>
+      <div class="big">RELIC</div>
+      <!-- THE CHOSEN SIZE IS THE RENDER RESOLUTION, so a line added
+           here changes what the demo draws, not how it is scaled. -->
+      <!-- WIDTH x HEIGHT x DIVISOR. The first pair is the visible
+           size, the divisor is how much cheaper the render is: the
+           host draws at the window divided by it and SDL stretches,
+           so a big picture need not be a big render. BEST FIRST. -->
+      <div id="opts">
+        <label><input type="radio" name="size" value="1280x720x1" checked>
+          1280 x 720, full - four times the work</label>
+        <label><input type="radio" name="size" value="1280x720x2">
+          1280 x 720, drawn at 640 x 360</label>
+        <label><input type="radio" name="size" value="640x360x1">
+          640 x 360</label>
+        <label><input type="radio" name="size" value="fit">
+          fit the browser, drawn at half</label>
+      </div>
+      <button id="go" type="button">START</button>
+      <div class="small">picture and sound start together<br>
+        a browser will not play audio until you ask it to</div>
+    </div></div>
+  </div>
+
+  <div id="audio">
+    <label><input type="checkbox" id="mute"> mute</label>
+    <label>volume <input type="range" id="vol" min="10" max="100"
+                         step="10" value="100"></label>
+    <span id="volnum">100%</span>
+  </div>
+
+  <div id="bar">
+    <span class="t">RELIC</span> - Nerve Axis, Assembly 1998 &nbsp;&nbsp;
+    <b>[</b> <b>]</b> part &nbsp; <b>space</b> pause &nbsp;
+    <b>.</b> step &nbsp; <b>f</b> fast forward &nbsp;
+    <b>m</b> mute &nbsp; <b>+ -</b> volume &nbsp;
+    <span id="status">loading...</span>
+  </div>
+  <pre id="log"></pre>
+
+  <div id="about">
+    <h1>RELIC</h1>
+    <p>An Amiga AGA demo by Nerve Axis, and the winner of the Amiga
+      demo competition at Assembly 1998 in Helsinki, 7-9 August. It
+      wants a 68020, the AGA chipset, a PAL display and four megabytes
+      of fast RAM, and its authors say in their own release notes that
+      it is 33,495 lines of hand-written assembly.
+      <a href="https://www.pouet.net/prod.php?which=194">pouet.net</a></p>
+
+    <p>This is not an emulator and not a capture. Every part here is a
+      transcription of the original's own code, in ANSI C, reading the
+      1998 executable and its data file at run time - the meshes, the
+      textures, the sine tables, the camera splines and the music are
+      all taken out of those bytes as the demo starts. Where the demo
+      hard-codes a number, so does this; where it builds a table, this
+      builds the same table.</p>
+
+    <p class="note">The one deliberate difference is resolution. The
+      Amiga renders 160 x 100 chunky pixels and encodes them to HAM8;
+      the effects here are parametric, so the same arithmetic runs at
+      whatever the window is. Scale 1.0 stays exact and is the
+      reference every other scale is checked against.</p>
+
+    <h2>WHAT IT RUNS</h2>
+    <p>The demo's own order: a terminal typing itself, a sun, the
+      approach to a vessel, a portal, a window over a planet, the orb
+      forming and the ship beneath it, an explosion, the release, the
+      Earth, sand, the temple, the return, debris, a valley, a city
+      burning, the planet destroyed and the ark leaving.</p>
+
+    <p>The clock is the music's, not the frame counter's. Scenes end
+      on a position in the module rather than after a count of fields,
+      which is how the cuts land where they did in 1998.</p>
+
+    <p class="note">THE CREDITS PART IS OURS AND THE DEMO HAS NO SUCH
+      THING. Past the end it hands over to a gallery of the demo's own
+      things with controls on them: the vessel, the cracked orb, the
+      ark, the burning city from above and from the street, and the
+      temple valley to fly through. <span class="k">Tab</span> moves
+      between them.</p>
+
+    <h2>KEYS</h2>
+    <table>
+      <tr><td class="k">[ ]</td><td>jump a scene back or on</td></tr>
+      <tr><td class="k">space</td><td>pause and resume</td></tr>
+      <tr><td class="k">.</td><td>single step one frame while paused</td></tr>
+      <tr><td class="k">f</td><td>fast forward, while held</td></tr>
+      <tr><td class="k">m</td><td>mute</td></tr>
+      <tr><td class="k">+ -</td><td>volume, ten steps</td></tr>
+      <tr><td class="k">r</td><td>render divisor, 1 to 4 - cheaper and
+        softer</td></tr>
+      <tr><td class="k">i</td><td>subpixel placement, above scale 1</td></tr>
+      <tr><td class="k">q esc</td><td>stop</td></tr>
+      <tr><td class="k">drag</td><td>swing the view, in the scenes that
+        take one</td></tr>
+    </table>
+
+    <p>In the credits gallery:</p>
+    <table>
+      <tr><td class="k">tab</td><td>the next thing to look at,
+        shift-tab the previous</td></tr>
+      <tr><td class="k">drag</td><td>orbit, and it stays where you leave
+        it</td></tr>
+      <tr><td class="k">wheel</td><td>closer and further - height, in the
+        temple</td></tr>
+      <tr><td class="k">middle</td><td>put it all back to rest</td></tr>
+      <tr><td class="k">z</td><td>hold to cool the orb; restart a burn;
+        walk forward in the temple</td></tr>
+      <tr><td class="k">x</td><td>walk back in the temple</td></tr>
+    </table>
+
+    <p class="note">A drag in the demo's own scenes only swings the
+      view and never touches what the demo is doing; letting go eases
+      back to the recorded camera. The gallery is the exception - its
+      orbit holds where you leave it.</p>
+
+    <h2>SOURCE</h2>
+    <p><a href="https://github.com/pinchyCZN/relic">pinchyCZN/relic</a></p>
+    <p>One C function per function in the disassembly, carrying the
+      name the database uses. <span class="note">src/</span> is the
+      reconstruction and <span class="note">src/main_sdl.c</span> the
+      only file that loops. What was established about the original,
+      and how, is written up under <span class="note">docs/</span>.</p>
+  </div>
+</div>
+<script type="text/javascript">
+  var statusEl = document.getElementById('status');
+  var logEl = document.getElementById('log');
+  var canvas = document.getElementById('canvas');
+  var stage = document.getElementById('stage');
+  var startEl = document.getElementById('start');
+  var muteEl = document.getElementById('mute');
+  var volEl = document.getElementById('vol');
+  var volNum = document.getElementById('volnum');
+  var ready = false, wanted = false, started = false;
+
+  /* THE CSS BOX IS THE RESOLUTION. SDL syncs the drawing buffer to
+     the element and the host renders at whatever that says, so the
+     size has to be on the stage BEFORE main runs; the -w/-h below
+     only decide the first frame. A narrow browser still wins, since
+     the box is capped at 100%. */
+  function chosenSize() {
+    var r = document.querySelector('input[name=size]:checked');
+    var v = r ? r.value : '640x360x1';
+    var p, w, h, d;
+
+    if (v === 'fit') {
+      /* 16 by 9 inside what the browser actually offers, rounded to
+         a multiple of 16 so the stretch stays even. */
+      w = (document.documentElement.clientWidth - 24) & ~15;
+      if (w < 320) w = 320;
+      h = (w * 9 / 16) | 0;
+      return [w, h, 2];
+    }
+    p = v.split('x');
+    w = parseInt(p[0], 10);
+    h = parseInt(p[1], 10);
+    d = parseInt(p[2], 10);
+    if (!(w > 0) || !(h > 0)) { w = 640; h = 360; }
+    if (!(d > 0)) d = 1;
+    return [w, h, d];
+  }
+
+  /* tools/build_web.sh substitutes this on the way into build/web and
+     it goes on every URL the page fetches, so a cached wasm cannot be
+     served beside a fresh page. */
+  var BUILD = '@BUILD@';
+
+  function fail(t) {
+    console.error(t);
+    logEl.textContent += t + '\n';
+  }
+
+  /* THE PAGE POLLS THE HOST AND IS NEVER TOLD. m and +/- move the
+     same two values these controls do, so the only way the checkbox
+     and the slider can follow the keyboard is to read them back.
+     Twice a second is far more often than a hand can press a key and
+     costs nothing. Writing only on a CHANGE is what stops the poll
+     fighting a slider mid-drag. docs/reconstruction.txt 3.5. */
+  var lastMute = -1, lastVol = -1;
+
+  function audioPoll() {
+    var m, v;
+
+    if (!started || !Module._Host_Muted) return;
+    m = Module._Host_Muted();
+    v = Module._Host_Volume();
+    if (m !== lastMute) { muteEl.checked = !!m; lastMute = m; }
+    if (v !== lastVol) { volEl.value = v; volNum.textContent = v + '%';
+                         lastVol = v; }
+  }
+
+  /* MAIN IS NOT RUN AT LOAD. The demo is paced by SDL_GetTicks, so
+     starting it before the click would run the picture while the
+     browser still refuses the audio, and the two would never meet.
+     noInitialRun holds it and callMain starts it on the gesture. */
+  /* ONCE, AND ONLY ONCE. The button's click fires its own handler and
+     then bubbles to the overlay's, so this ran twice: the second pass
+     found the panel gone, fell back to the default size and called
+     main AGAIN - a second SDL window, at that default, over the top
+     of the first. */
+  function begin() {
+    var wh;
+
+    if (started) return;
+    if (!ready) { wanted = true; return; }
+    started = true;
+    wh = chosenSize();
+    /* THE ATTRIBUTES, NOT A STYLE: a CSS size here would make SDL
+       adopt the box and throw the arguments away. SDL rewrites these
+       from -w/-h anyway; setting them keeps the overlay's last frame
+       the right shape. */
+    canvas.removeAttribute('style');
+    stage.removeAttribute('style');
+    canvas.width = wh[0];
+    canvas.height = wh[1];
+    if (startEl && startEl.parentNode) startEl.parentNode.removeChild(startEl);
+    statusEl.textContent = '';
+    try {
+      Module.callMain(['-w', String(wh[0]), '-h', String(wh[1]),
+                       '-rdiv', String(wh[2])]);
+    } catch (e) {
+      /* emscripten_set_main_loop(.., 1) unwinds main by throwing, so
+         that one is the loop starting, not a failure. */
+      if (String(e).indexOf('unwind') < 0) fail('callMain: ' + e);
+    }
+    canvas.focus();
+    setInterval(audioPoll, 500);
+
+    /* WHAT IT ACTUALLY GOT, once SDL has sized the canvas. The box is
+       capped at the browser's width, so a window narrower than the
+       choice gets less than it asked for - and silently, without
+       this. */
+    setTimeout(function () {
+      statusEl.textContent = canvas.clientWidth + 'x' + canvas.clientHeight
+                           + ' shown, ' + canvas.width + 'x' + canvas.height
+                           + ' drawn';
+    }, 500);
+  }
+
+  var Module = {
+    canvas: canvas,
+    noInitialRun: true,
+    locateFile: function (path) { return path + '?' + BUILD; },
+    print: function (t) { console.log(t); },
+    printErr: function (t) { fail(t); },
+    setStatus: function (t) { statusEl.textContent = t || ''; },
+    onRuntimeInitialized: function () {
+      ready = true;
+      statusEl.textContent = 'ready';
+      if (wanted) begin();
+    }
+  };
+
+  /* SDL wants the keyboard and a canvas only gets it when focused. */
+  startEl.addEventListener('click', begin);
+  /* The panel's own clicks pick a size; only the button starts. */
+  document.getElementById('opts').addEventListener('click',
+    function (e) { e.stopPropagation(); });
+  document.getElementById('go').addEventListener('click',
+    function (e) { e.stopPropagation(); begin(); });
+  canvas.addEventListener('click', function () { canvas.focus(); });
+
+  /* THE CONTROLS HAND BACK THE KEYBOARD. A checkbox or a slider keeps
+     focus once clicked, and the demo would then hear nothing. */
+  muteEl.addEventListener('change', function () {
+    if (Module._Host_SetMute) Module._Host_SetMute(muteEl.checked ? 1 : 0);
+    lastMute = muteEl.checked ? 1 : 0;
+    canvas.focus();
+  });
+  volEl.addEventListener('input', function () {
+    var v = parseInt(volEl.value, 10);
+
+    if (Module._Host_SetVolume) Module._Host_SetVolume(v);
+    volNum.textContent = v + '%';
+    lastVol = v;
+  });
+  volEl.addEventListener('change', function () { canvas.focus(); });
+
+  window.addEventListener('keydown', function (e) {
+    if (document.activeElement !== canvas) return;
+    if (e.key === ' ' || e.key.indexOf('Arrow') === 0) e.preventDefault();
+  }, false);
+</script>
+<script async src="relic.js?@BUILD@"></script>
+</body>
+</html>

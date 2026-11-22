@@ -1,0 +1,483 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                        THE PORTAL FLASH AND ITS SCENE
+
+
+Abstract
+
+   maybe_Space_RunPlanetScenes runs two scenes. The first is the lit
+   planet with the voxel object, effects/approach.txt. This note is
+   the second: the white cut between them, the flash that blooms out
+   of it, the spark shower, and the two passes that are not yet read.
+
+   The scene is mode 1 in Anim_SceneTick's dispatch and
+   Space_DrawApproachFrame is its frame routine.
+
+   THIS IS THE ASTEROID EXPLODING, not a portal opening. parts.txt
+   numbers it 2.4, an observer describes the asteroid bursting here,
+   and the routine is maybe_Explosion_DrawFlash. The "portal" reading
+   of section 3's flash is [inferred] from an observer reporting a
+   light the ship emerges from, and the ship does arrive in the same
+   scene's second phase - but the flash itself sits where the asteroid
+   was, so the explosion is the better name. This file keeps its
+   name because the cross-references do.
+
+Table of Contents
+
+   1. The Handover
+   2. The Scene's Clock
+   3. The Flash
+   4. The Sparks
+   5. The Background
+      5.1. The Warp Buffer, And Why The Scene Has Stars
+      5.2. The Ripple Itself
+      5.3. Where The Cut Lives
+      5.4. The Ship
+      5.5. The Camera Tracker
+      5.6. The Sky's Two Axes
+   6. The Reconstruction
+   7. Open Questions
+
+1.  The Handover
+
+   SCENE TWO DOES NOT FADE. The sequencer fills both framebuffers
+   with a single colour between the two scenes and mode 1's first
+   pass draws over the result [verified, 0x002cd422]:
+
+       A0 = g_pFrameBuffer          0x002f101c
+       A1 = the other buffer        0x002f1020
+       D0 = 0x3f3f003f
+       0xf9f + 1 passes of four longword stores into each
+
+   4000 passes of four is 16000 longwords, which is 160 x 100
+   exactly. 0x3f3f003f is R, G, light, B with the light byte zero, so
+   it is the same white the ramp builders produce - see
+   subsystems/display.txt for the pixel.
+
+   IT RUNS ONCE AND OUTSIDE EITHER FRAME LOOP, which is what makes it
+   a cut rather than a wash. Section 5.1's ripple overwrites the
+   framebuffer from its own source on every pass, so the white
+   survives for as long as it takes mode 1 to draw its first frame
+   and no longer.
+
+   Reproducing it per frame instead pins every channel at CHAN_MAX,
+   and because Draw_Flare ADDS into the framebuffer that swallows the
+   flash of section 3 whole: a white screen with nothing on it.
+
+   The same longword goes through Ham8_BuildTables at the handover -
+   D0 = 0x1f, D1 = 0, D2 = 0x2f at 0x002cd2ba - and the camera is
+   snapped to the limit scene two's yaw gate stops at:
+
+       g_CameraYaw     -0xaca       0x002cd2dc
+       g_CameraPitch   -0x4f        0x002cd2e6
+
+2.  The Scene's Clock
+
+   g_ApproachRange IS THE WHOLE SCENE'S CLOCK and there is no other
+   [verified]. The sequencer seeds it and mode 1 counts it down:
+
+       seed       0xe60            0x002cd2f0
+       per tick   -= 0xc, floored at zero, and skipped at zero
+                                   0x002d5d44
+
+   So it reaches zero 0xe60 / 0xc = 312 ticks in. Three things read
+   it: the flash's radius, the ripple's amplitude, and the gate on
+   the object pass - which runs only at 0x960 or below
+   [verified, 0x002cd53a].
+
+   THAT IS NOT THE SCENE'S LENGTH. Mode 1 runs to a music cue, like
+   every other scene here, so 312 ticks is how long the countdown
+   lasts and not how long the scene does.
+
+   THE SCENE'S LAST TICK IS 1028, AND g_RipplePhase DATES IT
+   [observed, on hardware]. Mode 1 subtracts 0x1f4 from it once a tick
+   for the whole scene, both loops, and nothing writes it afterwards -
+   so the last write is the last tick. On hardware it reads
+   -503500, which is tick 1007, and the final write is -514000, which
+   is tick 1028. So the scene is 1029 ticks and src/part_portal.c
+   declares that.
+
+   WHAT FOLLOWS IS 2.6, THE SECOND TEXT SCREEN. SpaceModule's table
+   calls Logo_Run with D0 = 1 - parts.txt section 3 - and the variant
+   index is the only thing that differs from 2.2: it picks up to three
+   line-art offsets out of g_LogoVariants and its own 64-colour
+   palette. Variant 1 has two lines. So it is the same effect with
+   different letters and different colour, and src/part_logo.c carries
+   it as a second Relic_Part rather than a second implementation.
+
+3.  The Flash
+
+   maybe_Explosion_DrawFlash (0x002cd71c) is one Draw_Flare at the
+   screen centre, and its whole content is the radius [verified]:
+
+       t = (g_ApproachRange >> 4) - 0xc8
+       t = t < 0 ? -t : t * 2
+       r = 0x80 - t - 0xa
+       nothing is drawn at r <= 0
+
+       D2 = 0x56, D3 = 0x34        the screen centre
+       A1 = g_pRayStreak           0x002f1030
+       A4 = g_ColRampAmber         0x002ef430
+
+   A V IN THE RANGE, WITH TWO DIFFERENT SLOPES. The peak is where
+   range >> 4 reaches 0xc8, which is range 0xc80, and above that the
+   term is doubled. From the 0xe60 seed:
+
+       +-------+------------+--------+------------------------+
+       | tick  | range      | radius | what it is doing       |
+       +=======+============+========+========================+
+       | 0     | 0xe60      | 58     | opens, already large   |
+       | 39    | 0xc8c      | 118    | the peak               |
+       | 119   | 0x8cc      | 58     | ebbing                 |
+       | 197   | 0x520      | 0      | gone                   |
+       +-------+------------+--------+------------------------+
+
+   So it rushes in over forty ticks and takes four times as long to
+   leave. It is gone less than two thirds of the way through the
+   countdown.
+
+   ITS COLOUR IS NOT ITS RAMP. g_ColRampAmber is built (0x3f, 0x2f,
+   0x20) from 0x780000 [verified, 0x002c9cec], which on its own is
+   amber. The scene reads pastel magenta because of two other things:
+   Ham8_BuildTables is called (0x1f, 0, 0x2f) at the handover, so the
+   light channel resolves toward PURPLE here and not toward scene
+   two's white, and Draw_Flare ADDS over the sky of section 5.1
+   rather than over black. Amber added to a dark purple field is the
+   pastel; amber on black is yellow.
+
+   ITS RAY TABLE IS A STREAK, NOT A RING. g_pRayStreak is the third
+   of Ray_BuildTables' three tables and the only one built without a
+   loop - ten explicit word stores and nothing else
+   [verified, 0x002ca104]:
+
+       index    0    1    2    3    4
+       value    2    4    6    4    2
+
+       index  126  127  128  129  130
+       value    2    4    6    4    2
+
+   Two five-entry bumps 128 angles apart, which is half of the
+   table's 256, so they face opposite ways: one streak across the
+   flare rather than the ring of spikes the other two tables give.
+   Every other entry is left as the buffer was. The d7 of 0xff set
+   before the stores is never used by anything.
+
+4.  The Sparks
+
+   g_SparkList (0x002f0f50) is ten entries of five longs,
+   [x, y, vx, vy, life], with x and y in 12.4 fixed [verified].
+
+   maybe_Space_RunPlanetScenes seeds it at the handover from the
+   object's last projected position [verified, 0x002cd44a]:
+
+       x     = g_LightProjX + (rand(0x190) - 0xc8)
+       y     = g_LightProjY + (rand(0x190) - 0xc8)
+       vx    = rand(0x18) + 4
+       vy    = -(rand(0x10) + 4)
+       life  = (rand(0x10) + 8) << 8
+
+   Every vx is positive and every vy negative, so the shower always
+   goes up and to the right. Math_Rand is the demo's own LCG and the
+   only randomness in it - see subsystems/effects.txt.
+
+   maybe_Flare_StepSparks (0x002cd5da) steps and draws them:
+
+       life -= 0x80, and the entry is skipped once it is <= 0
+       x += vx,  y += vy
+       r = (life >> 8) + rand(4)
+       Draw_Flare(r, (x >> 4) + 0x50, (y >> 4) + 0x32)
+       A4 = g_ColRampAmber
+
+   THE FLARE IS DRAWN AT THE PRE-STEP POSITION. The value written
+   back is x + vx but the one passed to Draw_Flare is the x the entry
+   was loaded with, so the drawn position trails the stored one by a
+   tick.
+
+   ONLY SEVEN OF THE TEN ARE EVER STEPPED. The dbf runs 0x6 + 1
+   times over a list the seeder fills ten entries of, so the last
+   three are written once and never read. Nothing else in the demo
+   was found reading them.
+
+   Life starts between 8 << 8 and 0x17 << 8 and falls 0x80 a tick, so
+   a spark lasts between 16 and 46 ticks and its radius halves every
+   two of them. The shower is over well before the flash is.
+
+5.  The Background
+
+5.1.  The Warp Buffer, And Why The Scene Has Stars
+
+   Warp_FullscreenRipple (0x002cd760) is mode 1's first drawing step
+   and it is what carries the scene's picture. Its source is
+   g_pWarpBuffer + 0x2e0 [verified, 0x002cd52a].
+
+   THE BUFFER IS 176 x 102 FOUR-BYTE PIXELS, and the allocation says
+   so outright. Mem_AllocSubBlocks (0x0021fdca) takes a descriptor
+   [count, on hardware...] in A0 and a size list in A1, sums the sizes,
+   allocates once, zeroes the lot and fills each slot with a
+   successive pointer. The handover passes A0 = g_WarpAllocCount,
+   A1 = g_WarpAllocSize and D1 = 4 for MEMF_FAST, and those two read
+   out of the image as [verified]:
+
+       g_WarpAllocCount    1
+       g_WarpAllocSize     0x11880
+
+   0x11880 is 71808 bytes, 17952 longwords, and 17952 / 176 is 102
+   with no remainder. So one buffer, 176 x 102, and g_pWarpBuffer is
+   its only slot.
+
+   0x2e0 IS ONE ROW PLUS EIGHT LONGWORDS - 736 bytes, 184 pixels,
+   176 + 8 - so the live region starts at the buffer's row 1, column
+   8. The padding is a row top and bottom and eight columns each side.
+
+   SKY_RENDERTOWARPBUFFER FILLS IT, AND THE STARS ARE THE SKY
+   [verified, 0x002d32dc]. It is Scene_DrawTexturedSky with two values
+   changed - 176 columns instead of 160, and g_pWarpBuffer instead of
+   the framebuffer - and the inner loop is instruction for instruction
+   identical to it. So this scene's background is the same generated
+   sky the planet scenes use: Sky_GeneratePlasma's field, Sky_AddStars'
+   stars and Sky_AddNebulae's blobs.
+
+   THE EIGHT COLUMNS ARE NOT SLACK, THEY ARE SKY. The corners here are
+   +-0x5800 over 0xb0 columns and Scene_DrawTexturedSky's are +-0x5000
+   over 0xa0; 0xb000 / 0xb0 and 0xa000 / 0xa0 are both 0x100, so the
+   two passes sample at exactly the same rate and the extra sixteen
+   columns are eight more of real sky each side. That is what lets the
+   ripple displace by up to eight pixels without ever reading off the
+   end.
+
+   IT RUNS ONCE, at 0x002cd376, between the two scenes. The sky is a
+   still, baked with the camera angle scene two ended on, and every
+   frame after that is the ripple resampling it. Only rows 0 to 99 of
+   the 102 are written, from offset 0, so the live region's last row
+   is one the sky pass never reached and the allocator left at zero.
+
+5.2.  The Ripple Itself
+
+   Warp_FullscreenRipple's per-pixel work is [verified]:
+
+       dx   = (s8)(col - 0x56),  dy = row - 0x34
+       dist = g_PolarTable[(dy << 8) | dx] & 0xff      low byte only
+       d4   = dist - (g_ApproachRange >> 3)
+       t    = (dist << 7) + g_RipplePhase
+       if t >= 0:   dst = src[-8]                      plain copy
+       else:
+           v  = (g_CosTable[(t & 0x1fff) - 8] * range) >> 10
+           v  = (v + 0x10000) >> 10
+           d5 = v >> 3                                 0..16, 8 centred
+           w  = min(v + 0x1f4 + d4, 0xff)
+           dst = src[-8 + d5], byte 2 := (w ^ 0xff) >> 2
+
+   WHAT RIPPLES IS THE LIGHT CHANNEL, NOT THE COLOUR. ror.l #8 brings
+   byte 2 - the HAM light index - into the low byte, the computed w
+   replaces it outright, and rol.l #8 puts it back. R, G and B are
+   taken unchanged from the displaced source. So this routine writes a
+   light index that resolves toward section 3's purple base, and THAT
+   IS THE SCENE'S EXPANDING MAGENTA. It is one effect, not a second
+   glow layered over the flash.
+
+   THE DISPLACEMENT IS HORIZONTAL ONLY. There is no vertical term; d5
+   indexes along the row, spanning -8 to +8 pixels about the pixel's
+   own column - exactly the slack section 5.1's buffer carries. The
+   vertical padding is never used by this caller.
+
+   THE WAVEFRONT EXPANDS FROM THE CENTRE. A pixel takes the plain copy
+   unless (dist << 7) + g_RipplePhase is negative, and mode 1 winds
+   g_RipplePhase backwards 0x1f4 a tick from zero - 0x002d5d32, before
+   anything else in the tick - so the rippling disc is
+   dist < -phase / 128 and reaches the corners about thirty ticks in.
+
+   THE COPY BRANCH IS NOT THE ZERO-DISPLACEMENT CASE. It takes src[-8]
+   flat, while a displaced pixel at range 0 works out at src[-8 + 8],
+   the pixel itself. The untouched outside of the wavefront therefore
+   sits eight pixels left of the rippled inside, which is a visible
+   seam at the wavefront and not a transcription slip.
+
+   Both the cosine index and the source carry a -0x20 byte bias, which
+   is -8 entries and -8 pixels; both are the demo's own.
+
+5.3.  Where The Cut Lives
+
+   THE WHITE BELONGS TO NEITHER SCENE. Space_FillWhite is called from
+   maybe_Space_RunPlanetScenes between the two frame loops, so it is
+   not a step of either effect - the demo structures a transition as
+   sequencer code, and the incoming scene is simply what is underneath
+   it. Both framebuffers are filled, so nothing on screen changes
+   until mode 1 finishes a frame.
+
+   IT LASTS FOUR PAL FRAMES [observed, on hardware]. The seed at
+   Portal_SeedRange writes g_ApproachRange on frame 28 and
+   Anim_SceneTick's first decrement of it lands on frame 32. After
+   that mode 1 decrements once per frame from 32 to 70 with no gaps,
+   so the scene runs at a full 50 Hz and only its first frame is slow.
+
+5.4.  The Ship
+
+   Scene_SortAndDrawAll (0x002d28ca) is called by both mode 1's frame
+   and Space_DrawFullFrame, gated on g_ApproachRange <= 0x960, and it
+   is the ship. Space_DrawFullFrame (0x002cd55c) is eight such calls
+   behind the same nine latch copies, and is the scene after this one.
+
+   THE SHIP IS NOT A SCENE OF ITS OWN, and treating it as one cannot
+   work. parts.txt numbers the asteroid exploding 2.4 and the ship
+   arriving 2.5, but both are mode 1 - one scene, one
+   g_ApproachRange - so the vessel appears while the ripple and the
+   flash are still running and shares their clock. The pass sits
+   between the ripple and the flash in the frame's order, so the ship
+   is drawn over the warped sky and under the glow.
+
+   TWO GATES, NOT ONE, AND THEY DIFFER. g_ObjectAngle starts turning
+   at range 0xa00 (0x002d5d56) but Scene_SortAndDrawAll only runs at
+   0x960 (0x002cd53a), so the vessel is already spinning before it is
+   drawn - about 13 ticks of spin by the time it appears.
+
+   THE OBJECTS ARE PLACED BY THEIR OWN VERTICES, not by the scene
+   slot. Obj_SetCentroid writes the vertex MEAN into +0x18, +0x20 and
+   +0x1c, and Scene_SortAndDrawAll reads it only to compute +0x24, the
+   sort key - Scene_TransformProject never touches it. Fspacedata
+   already holds the hull discs at comp2 -4024 and -2438 and the
+   struts at 2415, so the vessel is assembled in the chunk. That also
+   settles what Space_BuildObjects' per-slot subi instructions are:
+   0x186a0 off slot 0's +0x1c and 0xc350 off slot 1's are SORT-KEY
+   BIASES reaching the key through the latched pitch, not placements.
+
+   THE LATCHED CAMERA YAW IS WHAT PUTS THE SHIP IN FRONT OF THE EYE,
+   and nothing else does. Scene_TransformProject subtracts the camera
+   POSITION before rotating, so maybe_Camera_Rotate2AxisLatched
+   receives a huge offset vector rather than a small object-space one.
+   The yaw is -0xaca here, about -121 degrees, and it turns that
+   offset's comp0 into the depth. Measured live for vertex 0 of scene
+   object 0 [observed, on hardware]:
+
+       after the camera subtraction   comp0 +78448, depth -51320
+       after the yaw                  depth  +93650
+       projected                      x = 88
+
+   and 88 is the value the demo writes at 0x002d2d2e, so the chain is
+   confirmed end to end. The camera position alone would leave every
+   depth around -51000; it is the rotation that rescues it.
+
+   TAKING THE LATCHED ANGLES AS ZERO IS THEREFORE FATAL AND SILENT.
+   Every vertex of every object falls behind the near plane, nothing
+   is drawn, and the result is indistinguishable from geometry that
+   failed to load. g_CameraYawLatched is zero in the planet scenes,
+   which is what makes the assumption tempting.
+
+   SO THE SHIP ARRIVES WITH THE GATE, NOT WITH THE CAMERA. It is
+   drawn from the first frame g_ApproachRange is at or under 0x960 -
+   tick 107 of the scene, while the flash is still around radius 67
+   and shrinking - and the camera's travel afterwards only brings it
+   closer. The demo's own first projected write lands on that same
+   tick [observed, on hardware].
+
+   src/ship.c IS A DRAWING MODULE AND NOT A PART for that reason: the
+   owning part passes the angle in. It carries Fspacedata's objects,
+   Scene_TransformProject's chain and Draw_LineAA, which is the
+   demo's; the textured fill is section 5.2's open question.
+
+   GFX_LINEAA SCALES BY THE FRAME ITSELF. Scaling the projected
+   coordinates before handing them to it multiplies the scale twice,
+   which is the identity at 1.0 and throws every line clean off a
+   larger frame - so a reference render looks right and a window shows
+   nothing at all.
+
+5.6.  The Sky's Two Axes
+
+   Scene_DrawTexturedSky builds its pan offset from BOTH camera
+   accumulators, and only the low byte of it comes from the one that
+   is obvious [verified, 0x002d2e64]:
+
+       D4 = g_CameraAngleLatched  ; D4 += D4 ; swap D4
+       D7 = (0x002e0ad4)          ; D7 += D7 ; D7 >>= 8
+       move.b D4b,D7b
+       A6 = D7 * 4                  a BYTE offset into the texture
+
+   THE SWAP IS WHAT MAKES THE HORIZONTAL TERM (angle * 2) >> 16, and
+   the byte move is what confines angle2 to WHOLE ROWS: 256 texels of
+   four bytes is 1024, which is exactly what D7's upper bits are
+   scaled by. So angle slides the field sideways inside a row and
+   angle2 moves it vertically, a row at a time.
+
+   TAKING ONLY THE LOW BYTE LEAVES A SKY THAT CAN TRAVEL SIDEWAYS AND
+   NOTHING ELSE, which is the whole of the vertical drift missing.
+
+   THE ACCUMULATORS CARRY ACROSS THE HANDOVER. The sequencer clears
+   neither at 0x002cd2a8 onward, so scene two's values are what
+   Sky_RenderToWarpBuffer bakes with AND what mode 1's live sky starts
+   from. Starting the live sky at zero instead moves the entire field
+   by the accumulated pan in a single frame, on the exact frame the
+   ripple stops - which reads as the starfield jumping as the waving
+   ends.
+
+   Space_CamMove is what feeds them: the yaw delta resolved through
+   the heading accumulates into angle and the pitch component into
+   angle2, so the tracker of section 5.5 drives both axes at once.
+
+6.  The Reconstruction
+
+   src/part_portal.c is part 2.4. It carries the handover fill, the
+   countdown, the flash and the sparks; sections 5.1 and 5.2 are
+   marked [open] in it with what each needs.
+
+   Space_BakeSky fills the demo's own 176 x 102 buffer and
+   Space_Ripple reads its live region, so the background and its
+   wavefront are both the demo's.
+
+   THE SHIP IS TEXTURED. src/ship.c carries the nine bit-selected
+   objects, Mesh_SortFacesByC2's setup-time face order,
+   Poly_DrawFaceList's backface cross product and the texel fill;
+   src/uv.c generates the coordinates and src/rast.c fills the spans.
+   Of 267 faces about 90 survive the cull at any angle.
+
+   THE FILL IS WHAT PUTS THE SHIP UNDER THE EXPLOSION. A texel is
+   0xRRGG00BB and the light byte is zero in every one, so filling a
+   face writes zero there and the flash's additive pass lies OVER the
+   vessel. Drawing it with Draw_LineAA instead writes 0x3f into the
+   light channel, which nothing later reduces, and the wireframe then
+   sits on top of the glow however the order is arranged.
+
+   THE REPLAY MUST RESET AND RESTORE. Approach_FinalLightProj and
+   Approach_FinalSkyPan both replay scene two's step, and
+   approach_step reseeds only the light's position - not the camera.
+   Replaying on top of a scene that has already run therefore starts
+   with g_CameraYaw already past its -0xaca gate, so the pan never
+   runs and the projection lands somewhere else entirely. The visible
+   symptom was the spark shower flying up and to the LEFT after
+   watching the scene through, and up and to the right after jumping
+   straight to it.
+
+   THE SPARKS NEED SCENE TWO'S LAST PROJECTION, which is the product
+   of that scene's whole accumulated pan and has no closed form.
+   Approach_FinalLightProj replays the step - arithmetic only,
+   nothing drawn - and reports where it ends, so part 2.4 seeds
+   correctly whether or not part 2.3b was watched first.
+
+   THE HANDOVER IS IN THE CORE, NOT A HOST. Relic_Part carries a
+   ticks field and demo.c hands over to the next part when a part
+   reaches it; a part declaring zero never hands over, which is every
+   part whose length is still a music cue. Both scenes end on a cue
+   and carry a measured fallback for a host that cannot answer one -
+   242 for scene two, 1028 here.
+
+   THE MOUSE LOOK REACHES BOTH FRAME ROUTINES, so the vessel swings
+   with the pointer from the moment it arrives. It is a control of
+   ours and effects/approach.txt section 8 is its home; what matters
+   here is that the ship carries its own camera pair rather than
+   reading Space_SetCamera, so the offset goes into a COPY of
+   g_CamSrc and the tracker's camera is left untouched. The first
+   loop's background cannot follow - it is the sky baked once at the
+   handover - so for the countdown's ticks the ship moves over a
+   still picture.
+
+7.  Open Questions
+
+   o  The object pass, section 5.4, and with it the ship.
+
+   o  Why the seeder fills ten sparks and the stepper walks seven.
+      Both counts are immediate constants and neither is derived, so
+      it is not a shared symbol that drifted. About four are visible
+      at once on the running demo [observed], which is consistent with
+      seven stepped on staggered lives rather than with ten.
+
+   o  Which music cue ends the scene, and so how much of the 312-tick
+      countdown is ever seen. The flash is gone by 197 either way.

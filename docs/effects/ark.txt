@@ -1,0 +1,302 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                        THE ARK'S DEPARTURE
+
+
+Abstract
+
+   The demo's last scene: the ark climbing away over the warped
+   ground into a light, and the screen washing to white around it.
+
+   IT IS THE TEMPLE MODULE'S SECOND MODE, not a new one, and the
+   temple scene's machinery draws nearly all of it. Nothing in it
+   waits on the music - the whole scene is three counters.
+
+Table of Contents
+
+   1. Where It Sits
+   2. The Frame
+   3. One Counter Does Both Fades
+   4. The Two Blobs
+      4.1. The Ray Table Is Exact
+   5. The Sky Is Two Scrolling Layers
+      5.1. The Ground Is The Backdrop
+      5.2. Two Counters Are Handed Over
+   6. The Reconstruction
+   7. Open questions
+
+1.  Where It Sits
+
+   Demo_RunAct2 0x0021f8b8 calls TempleModule_Run with D0 = 1, after
+   the planet's destruction and last of all [verified]. The module
+   dispatches at 0x003678e0: D0 == 0 is the ruins, D0 == 1 falls to
+   0x0036822e, which is Temple_InitMode1 and then a loop on
+   Temple_StepMode1 until the quit flag.
+
+   THE SCENE IS 0x47e FIELDS LONG. 0x00368284 stages g_ArkTicksLeft
+   at 0x47e and Temple_StepMode1Camera takes one off it a field,
+   raising the quit flag at zero. There is no cue to read and no
+   choice for a reconstruction to make - unlike the city's third
+   shot or the destruction's aftermath.
+
+2.  The Frame
+
+   Temple_StepMode1 0x003682f8 latches the camera and object state
+   the VBL hook advanced, then makes seven calls [verified]:
+
+       +------------+------------------------+-------------------+
+       | address    | routine                | what it does      |
+       +============+========================+===================+
+       | 0x00367d3a | Temple_WarpTerrain     | the whole frame   |
+       | 0x00369f7e | Temple_DrawSkyHaze     | LIGHT, REPLACED   |
+       | 0x0036cf02 | Temple_DrawDustPuff    | a blob, r = 0x46  |
+       | 0x0036b59e | Temple_DrawLightBlob   | a blob, r = 0x7f  |
+       | 0x0036843a | Temple_DrawObjectRange | objects 0 .. 0xc  |
+       | 0x003683d8 | Temple_Mode1Fade       | the frame's LIGHT |
+       +------------+------------------------+-------------------+
+
+   and Temple_RunMode1's loop follows each one with Temple_BlurFrame
+   0x0036e238, which is the module's present pass - section 6.
+
+   THE ORDER MATTERS TWICE OVER. The terrain writes every pixel as a
+   whole longword, so nothing clears the frame and nothing may be
+   drawn before it; and the sky haze REPLACES the light byte, so it
+   is the floor both blobs and the fade then build on.
+
+   TEN OBJECTS, NOT THIRTEEN. The range is 0 to 0xc, but every record
+   whose +0x40 is non-zero is skipped, and Temple_InitMode1 pours
+   g_TempleObjectMask 0x0036a152 into that field at 0x0036a0fe: it
+   hides objects 4, 5 and 10 [verified]. Drawing all thirteen puts a
+   mast on the ark that the demo has not got.
+
+   THE LIGHT BLOB IS NAILED TO THE SHIP. Its centre is the FIRST
+   PROJECTED POINT of object 9, less 0x12 across and plus 8 down -
+   Temple_StepMode1 reads it out of that object's own point buffer at
+   0x003683a4, which the previous frame's Temple_DrawObjectRange
+   filled, so the glow is one field behind the hull it sits on
+   [verified]. On hardware the buffer reads 0x92, 0x3b and the
+   reconstruction projects 145, 59 for the same vertex [observed].
+
+   WATCH THE RADIUS AT 0x00368356. A perspective radius is divided
+   out of 0x186a0 by 0x00372b1a and then THROWN AWAY two
+   instructions later by a flat move.l #0x46,D1, which also makes
+   the clamp under it dead. A decompiler shows the divide as live
+   code and the dust puff as perspective-scaled; it is not.
+
+3.  One Counter Does Both Fades
+
+   g_ArkFadeLevel 0x003726d6 is the scene's whole light curve, and
+   it runs in two directions [verified]:
+
+       staged 0x200 by 0x00368284
+       falls 4 a field while the camera's Z is above -64999
+       CLIMBS 1 a field once Z passes under it
+       floors at zero
+
+   So it opens the scene by fading IN from white over its first 128
+   fields, sits at zero through the middle, and then WHITES OUT at
+   the end. Temple_Mode1Fade 0x003683d8 turns it into the picture:
+   every one of 0x3de0 longwords has min(0x3f, level >> 3) added to
+   its light byte, through g_TempleSatRamp so it saturates rather
+   than wrapping, and the pass is skipped entirely at zero.
+
+   THE CAMERA IS WHAT TRIPS IT. 0x00372b88 is staged at 0xfffff060,
+   which is -4000 DECIMAL, and Temple_StepMode1Camera takes 0x8c off
+   it a field - so it reaches -64999 at field 436, which is where the
+   white out begins.
+
+   Three readings on hardware confirm the whole model [observed]:
+
+       +------+--------+-------+--------+------------------------+
+       | slot | fields | fade  | cam Z  | predicted              |
+       +======+========+=======+========+========================+
+       |  4   |     24 |   416 |      - | 0x200 - 4 * 24 = 416   |
+       |  6   |    821 |   386 |-118940 | 821 - 436 = 385, and   |
+       |      |        |       |        | -4000 - 0x8c * 821     |
+       +------+--------+-------+--------+------------------------+
+
+   The camera matches to the byte and the fade to within one field.
+
+4.  The Two Blobs
+
+   BOTH ARE THE SAME SKELETON every scene in this corpus duplicates
+   - Temple_DrawLightBlob 0x0036b59e is Valley_DrawBlast
+   0x00315524's arithmetic exactly [verified]:
+
+       v = g_BlobFalloff[(radius << 8) | dist]
+           - rays[angle + g_TempleBlobPhase]
+           - rays[angle + 2 * g_TempleBlobPhase]
+       pixel += ramp[v]
+
+   with the angle and distance coming from g_AtanTable as a packed
+   pair, the two angular samples SUBTRACTED, and the ramp added as a
+   whole longword. Register arguments: D1 the radius, D2/D3 the
+   centre, A1 the ray table, A4 the ramp.
+
+   THEY DIFFER IN WHERE THEY SIT. The dust puff is nailed to the
+   frame's centre, 0x50 by 0x32, at a fixed 0x46. The light blob
+   follows object 9 - section 2.
+
+4.1.  The Ray Table Is Exact
+
+   Temple_SeedNoiseTables 0x00368118 fills both of them once per
+   module, off Temple_Rand 0x003680e8. THE SEED IS CLEARED TWO
+   INSTRUCTIONS EARLIER at 0x003679be and nothing else in the demo
+   draws from that LCG, so the tables are the same in every run and a
+   reconstruction reproduces them byte for byte rather than in
+   character [verified against the live buffer].
+
+       x    = x * 0x5d43 + 0x5c2d
+       rand = (n * ((x >> 16) ^ x & 0xffff)) >> 16
+
+   (0x0037471c) comes first - twenty five-wide spikes, read only by
+   the type-4 object glow, which this scene's range never reaches.
+   ITS FORTY DRAWS STILL MATTER, because they set where the second
+   table's sequence begins.
+
+   (0x00374720) is the light blob's: twenty arcs of a constant height
+   0..0xc over a run of 0x15..0x24 angles, wrapping; then each entry
+   averaged with the next - by an lsr.b, so the LOW BYTE only - and
+   NEGATED at 0x003681c6. Valley_BuildRays is the same generator and
+   negates for the same reason, effects/valley.txt 2.8.
+
+   The third table at (0x00374724), a 2.4.8.4.2 kernel, is written
+   and read by nothing.
+
+5.  The Sky Is Two Scrolling Layers
+
+   Temple_DrawSkyHaze 0x00369f7e writes the light byte of all 16000
+   texels from a pair of longwords per texel out of (0x00374704):
+
+       LIGHT = 0x0037c900[(angleB + b) as a word]
+             + low byte of (0x003748f8)[+0x20000 + (angleA + a) * 4]
+
+   The two angles are 0x00369f76 and 0x00369f7a, advanced +0x201 and
+   -0x100 a field, so the layers crawl in opposite directions at
+   different rates.
+
+   THE PAIRS ARE A CENTRED POLAR FIELD. Temple_BuildHazeLayerA
+   0x00369fd0 and Temple_BuildHazeLayerB 0x0036a038 fill them off
+   g_AtanTable, indexed by a SIGNED word whose high byte is the row
+   from -0x32 to 0x31 and whose low byte is the column from -0x50 to
+   0x4f [verified]:
+
+       a = angle byte, d = distance byte
+       A: entry = a      | ((0x10000  / d) >> 8 & 0xff) << 8
+       B: entry = a * 2  | ((0x320000 / d) >> 8 & 0xff) << 8
+
+   The high byte is a RECIPROCAL of the distance, so each layer flows
+   outward from the centre rather than sweeping across; B's doubled
+   angle and 0x32-times numerator are the whole of the difference
+   between them.
+
+   THE TEXTURE IS FPLASMA AGAIN - the same chunk the valley's haze
+   and the space module's glow read. Temple_InitMode1 loads it at
+   0x0036a0a2 off the name list at 0x003e437c, and
+   Temple_GreyHazeTexture 0x0036b880 then greyscales it in place:
+   every longword's B byte doubled plus eight, splatted over the
+   other channels with LIGHT left at zero. Fplasma's 06.04.00.16
+   becomes 34.34.00.34, which is what the live buffer reads
+   [verified].
+
+   IT IS THE SCENE'S ONLY TEXTURE and both readers want the same
+   bytes: the sky haze takes the one byte as a height, and the ground
+   under it takes the whole longword as a pixel.
+
+   0x0037c900 IS REAL FILE DATA, a wave profile, and it is indexed by
+   a SIGNED word - so the negative half reads out of the table into
+   whatever precedes it, the same way the destruction's kind table
+   runs into code.
+
+5.1.  The Ground Is The Backdrop
+
+   Temple_WarpTerrain 0x00367d3a is not a strip along the bottom of
+   the picture - it writes all 16000 pixels as whole longwords
+   straight over the frame, and everything else in the scene is drawn
+   on top of it. Leaving it out costs far more than the ark does: the
+   demo's red channel averages 38.7 down the left of the frame where
+   a reconstruction without it reads 3.8 [observed].
+
+   It is a rotozoom over a 256 by 256 image. Three corners go through
+   0x00367ce4 at g_TempleWarpAngle 0x00372b12 and g_TempleAltitude
+   0x00372b1a, 0x12c0 for this scene; the differences become a column
+   step over 0xa0 and a row step over 0x64. The texel index is MERGED
+   out of two accumulators - bits 8..15 of the row one and bits 0..7
+   of the ror'd column one - which is what wraps it, and the texture
+   pointer is biased 0x20000 so the image's centre is the origin.
+
+5.2.  Two Counters Are Handed Over
+
+   Temple_RunMode1 0x0036822e stages a dozen globals and two of the
+   ones the frame depends on are NOT among them. g_TempleBlobSpin
+   0x00372bbc, which turns the light blob's rays, and
+   g_TempleWarpAngle 0x00372b16, which turns the ground, are stepped
+   by the ruins' VBL hook Temple_StepSceneCamera 0x00372524 as well
+   as by this scene's, so both arrive carrying the whole module's
+   history [verified].
+
+   Hardware 151 fields in reads 0x758 and -2155. Winding those
+   back through the +8 and +0xa the hook applies puts the scene's
+   first field at 680 and -3655 [observed].
+
+   THE TWO SKY-HAZE ANGLES BESIDE THEM ARE AT ZERO, because only mode
+   1's hook touches 0x00369f76 and 0x00369f7a - which is the check
+   that this is a real handover and not a misread tick count.
+
+6.  The Reconstruction
+
+   src/part_ark.c, part 2.20. THE COUNTERS ARE EXACT: at two points
+   on hardware the demo reads ticks 1126 and 329, fade 416 and 386,
+   and a
+   camera Z of -118940, and the part reads the same six numbers at
+   its ticks 25 and 822 [observed]. The white out opens on its tick
+   437, a field after the predicted 436.
+
+   BOTH RAMPS ARE EXACT TOO. Temple_BuildColourRampPlain 0x00367f1e
+   is Ramp_BuildColour's curve instruction for instruction, so
+   Gfx_BuildColourRamp covers it on 0x3f / 0x2f / 0x20 over 0xc80000;
+   Temple_BuildPuffRamp 0x0036cffe is the same curve with a scale on
+   the index and one byte out, on 0x1000000 over 0x12c.
+
+   EVERY DRAW CALL IS IN. The terrain, the blur and the object range
+   are part_temple.c's already and are reached through three entries
+   added to src/objset.h - Temple_WarpTerrainTo, Temple_BlurFrameTo
+   and Temple_DrawObjectRange - each the module's own routine over
+   the host's frame rather than its fixed 160 by 100 one.
+
+   Against the two readings, per channel [observed]:
+
+       +-------+--------+-------+-------+-------+-------+-------+
+       | slot  | fields |     R |     G | LIGHT |     B |  same |
+       +=======+========+=======+=======+=======+=======+=======+
+       | 4     |     25 |  0.90 |  0.76 |  0.59 |  0.78 | 63.4% |
+       | 5     |    151 |  2.01 |  1.70 |  1.37 |  1.44 |  9.8% |
+       | 6     |    822 |  1.25 |  1.16 |  0.36 |  1.05 | 24.3% |
+       +-------+--------+-------+-------+-------+-------+-------+
+
+   and the three counters read the same at all three: ticks left,
+   fade level and camera Z agree to the unit.
+
+   SCORE THE LAST FRAME OF A RUN, NEVER A SINGLE ONE. Half of
+   Temple_BlurFrame is the frame it presented last, so one frame on
+   its own comes out at half the demo's brightness however correct
+   the rest of it is.
+
+7.  Open questions
+
+   -  WHETHER THE TWO HANDED-OVER COUNTERS CAN BE DERIVED rather
+      than measured. src/part_ark.c carries section 5.2's figures as
+      the scene's entry state; playing the module through from the
+      ruins would produce them instead, if part_temple.c's ruins runs
+      to the same length as the demo's.
+
+   -  0x003720ec and 0x0037210a in the run are unread, as is
+      0x0036d636 in Temple_InitMode1.
+
+   -  Gfx_Flare PINS THE RAMP INDEX where Temple_DrawLightBlob reads
+      a sign-extended word past the table into zeros, so the demo's
+      core goes hollow where two rays push the falloff over 0xff and
+      the reconstruction's saturates. Neither is visible at either
+      reading; see effects/planet_sun.txt 6 for the other side of
+      the same choice.

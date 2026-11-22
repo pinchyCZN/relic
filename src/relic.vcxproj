@@ -1,0 +1,162 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>15.0</VCProjectVersion>
+    <ProjectGuid>{B7A61C2E-5D44-4C1A-9E3F-1A2B3C4D5E60}</ProjectGuid>
+    <RootNamespace>relic</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v141</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)..\build\obj\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>relic</TargetName>
+    <!-- The demo reads reverse/ghidra/relic by a relative path, so
+         debug from the repository root, not from src/. -->
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..</LocalDebuggerWorkingDirectory>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!-- /TC compiles everything as C, not C++. MSVC has no C89
+           switch; emscripten's clang with -std=c89 -pedantic is what
+           actually catches the lapses, which is why tools/build_web.sh
+           is wired up from the start. -->
+      <CompileAs>CompileAsC</CompileAs>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)third_party\SDL\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>SDL2.lib;SDL2main.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='Win32'">
+    <Link>
+      <AdditionalLibraryDirectories>$(ProjectDir)third_party\SDL\lib\x86;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+    <PostBuildEvent>
+      <Command>xcopy /D /Y "$(ProjectDir)third_party\SDL\lib\x86\SDL2.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
+    <Link>
+      <AdditionalLibraryDirectories>$(ProjectDir)third_party\SDL\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+    <PostBuildEvent>
+      <Command>xcopy /D /Y "$(ProjectDir)third_party\SDL\lib\x64\SDL2.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <TreatSpecificWarningsAsErrors Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">4013</TreatSpecificWarningsAsErrors>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</GenerateMapFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <TreatSpecificWarningsAsErrors Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">4013</TreatSpecificWarningsAsErrors>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="dat.c" />
+    <ClCompile Include="demo.c" />
+    <ClCompile Include="music_ibxm.c" />
+    <ClCompile Include="third_party\ibxm\ibxm.c" />
+    <ClCompile Include="third_party\prowizard\p61a.c" />
+    <ClCompile Include="gfx.c" />
+    <ClCompile Include="tex.c" />
+    <ClCompile Include="geom.c" />
+    <ClCompile Include="image.c" />
+    <ClCompile Include="beam.c" />
+    <ClCompile Include="part_logo.c" />
+    <ClCompile Include="orbscene.c" />
+    <ClCompile Include="part_orb.c" />
+    <ClCompile Include="part_underside.c" />
+    <ClCompile Include="part_explosion.c" />
+    <ClCompile Include="orb.c" />
+    <ClCompile Include="part_release.c" />
+    <ClCompile Include="part_earth.c" />
+    <ClCompile Include="part_sand.c" />
+    <ClCompile Include="part_temple.c" />
+    <ClCompile Include="part_return.c" />
+    <ClCompile Include="part_debris.c" />
+    <ClCompile Include="part_valley.c" />
+    <ClCompile Include="part_city.c" />
+    <ClCompile Include="part_destruction.c" />
+    <ClCompile Include="part_ark.c" />
+    <ClCompile Include="part_credits.c" />
+    <ClCompile Include="stills.c" />
+    <ClCompile Include="main_sdl.c" />
+    <ClCompile Include="part_approach.c" />
+    <ClCompile Include="part_portal.c" />
+    <ClCompile Include="part_window.c" />
+    <ClCompile Include="ship.c" />
+    <ClCompile Include="rast.c" />
+    <ClCompile Include="uv.c" />
+    <ClCompile Include="part_sun.c" />
+    <ClCompile Include="space.c" />
+    <ClCompile Include="sprout.c" />
+    <ClCompile Include="part_term.c" />
+    <ClCompile Include="parts.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="gfx.h" />
+    <ClInclude Include="host.h" />
+    <ClInclude Include="image.h" />
+    <ClInclude Include="parts.h" />
+    <ClInclude Include="objset.h" />
+    <ClInclude Include="relic.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

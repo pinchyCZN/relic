@@ -1,0 +1,139 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                                MUSIC
+
+
+Abstract
+
+   The music is The Player 6.1A, a published third-party Amiga module
+   replayer, driven from a CIA-B timer interrupt [verified]. The
+   modules are the two C-prefixed chunks in relic.dat.
+
+   P61 IS SOMEBODY ELSE'S CODE AND NOT AN EFFECT, so this document
+   identifies it, bounds it, and stops - docs/README.txt section 7.
+   The point of writing it down at all is to stop a future session
+   reverse engineering a published replayer by accident.
+
+Table of Contents
+
+   1. The evidence
+   2. What this means for analysis
+   3. The cue, which is what ends a scene
+   4. Open questions
+
+1.  The evidence
+
+   +--------------------+---------------+-----------------------------------+
+   | String             | At            | Reading                           |
+   +====================+===============+===================================+
+   | P61_TimerInterrupt | SEG0+0x002ad8 | The Player 6.1's own symbol name. |
+   |                    |               | P61 is the standard prefix for    |
+   |                    |               | every entry point in that player  |
+   +--------------------+---------------+-----------------------------------+
+   | ciab.resource      | SEG0+0x002ac9 | OpenResource target. P61 uses a   |
+   |                    |               | CIA-B timer for its tempo         |
+   +--------------------+---------------+-----------------------------------+
+   | audio.device       | SEG0+0x002abc | the four Paula channels are       |
+   |                    |               | claimed through the OS            |
+   +--------------------+---------------+-----------------------------------+
+   | r:p61.relic2       | SEG0+0x0188d3 | a P61-format module expected in   |
+   |                    |               | ram:, named for this demo         |
+   +--------------------+---------------+-----------------------------------+
+
+   All four strings sit within 0x20 bytes of each other at
+   SEG0+0x002abc..0x002aea, apart from the filename. A cluster that
+   tight is one subsystem's string pool [inferred].
+
+   The modules are Cmodule1 and Cmodule2 in relic.dat, 821,524 and
+   929,998 bytes, and they are the only two chunks the archive puts in
+   chip RAM - which is required, because Paula's audio DMA cannot read
+   fast RAM. formats/relic_dat.txt section 3 has the sizes and the
+   memory arithmetic.
+
+   The executable's name table also asks for Cmodule3 and Cmodule4,
+   which this archive does not contain. See formats/relic_dat.txt
+   section 5.
+
+2.  What this means for analysis
+
+   o DO NOT REVERSE ENGINEER THE REPLAYER. P61's format and sources
+     are published. Find its entry points, name them with their P61
+     names, bound the code, and leave it.
+   o A P61-prefixed name is the player's own name and should be kept
+     verbatim - P61_Init, P61_Music, P61_End,
+     P61_TimerInterrupt - rather than renamed into this project's
+     Subsystem_Verb convention. It is the one place where somebody
+     else's naming wins, because it makes the code identifiable to
+     anyone who knows the player.
+   o The CIA-B interrupt is a timing source the demo shares. If a part
+     turns out to be synchronised to the music, the sync comes through
+     whatever P61 exposes - a position or row counter - and that
+     variable is worth finding even though the player is not.
+   o An "Eeeek! Memory Imbalance!" check exists at SEG0+0x018875
+     [verified], so module loads and frees go through the demo's own
+     allocator. See overview.txt section 4.
+
+3.  The cue, which is what ends a scene
+
+   MOST PARTS DO NOT END ON A FRAME COUNT. They loop until the music
+   reaches a named position, so the timeline is the module's and the
+   visuals follow it - which is why a port has to be told the tick a
+   scene ends on until it plays the module itself.
+
+   TWO CALLS ARE THE WHOLE INTERFACE:
+
+       Music_ArmCue(D0 = order, D1 = row)      0x0021ff3c
+           g_MusicCueOrder = order
+           g_MusicCueRow   = row
+           g_MusicCueHit   = 0
+
+       Music_PollCue()                          0x0021ff64
+           if (!left button) and g_MusicCueHit == 0: return Z set
+           g_MusicCueHit = 0 ; return Z clear
+
+   THE ANSWER COMES BACK IN THE FLAGS, NOT IN D0. Every caller is a
+   jsr followed by a bare beq, reading the Z that the routine's own
+   tst or moveq left [verified, 0x0021ff64].
+
+   AND THE LEFT MOUSE BUTTON FIRES EVERY CUE, so holding it skips
+   forward a scene at a time. FUN_0021ff50 is the same test written
+   as a blocking wait.
+
+   THE REPLAYER'S GLUE SETS THE FLAG, comparing the armed position
+   against the module's current one [verified, 0x00220e00]:
+
+       if (g_MusicCueOrder <= g_MusicSongPos
+           and g_MusicCueRow <= g_MusicSongRow)
+               g_MusicCueHit = 1
+
+   so g_MusicSongPos and g_MusicSongRow at 0x0021ffa2 and 0x0021ffa6
+   ARE the module position a visual can sync to. They sit in the
+   code stream rather than in BSS, and nothing disassembles the
+   comparator because it is reached only from the CIA interrupt.
+
+   MEASURED CUE TICKS, for parts that have been timed off hardware.
+   A tick is a PAL vertical blank and the count starts at the
+   scene's own first tick, not the demo's:
+
+    +-------+-------------------+-------+---------------------------+
+    | part  | scene             |  tick | how                       |
+    +=======+===================+=======+===========================+
+    | 2.13  | the sand          |   831 | g_SandFuse dated against  |
+    |       |                   |       | hardware - sand.txt 11    |
+    +-------+-------------------+-------+---------------------------+
+
+   EVERY ONE OF THESE BECOMES A REAL CUE ONCE THE MODULE PLAYS, and
+   the arming call says which: Sand_RunShots arms (1, 0x10), so the
+   sand ends at order 1 row 16. A port that plays the module should
+   drop the measured tick and poll the position instead.
+
+4.  Open questions
+
+   o Which hunk holds the player? The strings are in SEG0; the code
+     need not be.
+   o Which P61 variant, and is it the one with the fast CIA replay or
+     the vertical-blank fallback? The string says 6.1A but the string
+     is a symbol name, not a version stamp.
+   o Where does r:p61.relic2 come from? Nothing in relic.dat holds it
+     and the readme does not mention it.

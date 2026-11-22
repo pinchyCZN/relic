@@ -1,0 +1,327 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                   THE UNDERSIDE SHOT OF THE ORB
+
+
+Abstract
+
+   Part 2.11, the cut that follows the orb's formation: the camera
+   comes out from under the ship and circles, looking up through the
+   claws at the sphere they hold. It is ANIM MODE 0x12. Almost nothing
+   about the effects changes from the previous shot - this note is
+   mostly about the camera and about why the shot is as long as it is.
+   The effects themselves are effects/orb.txt.
+
+Table of Contents
+
+   1. The Cut
+   2. Nothing About The Effects Changes
+   3. The Camera
+   4. The Light Base Decides The Orb's Core
+   5. Open questions
+
+1.  The Cut
+
+   Space_RunPart's phase 7. The setup is nine stores and a music cue
+   [verified, 0x002cc840]:
+
+       mode                     0x12
+       camera                   (7252, -13400, 9643)
+       yaw   0x002e0b32         0
+       pitch 0x002e0b36         -0x800
+       0x002e0b26               0x100
+       g_CamCursor12            0x100
+       music cue                (0x1e, 0x34)
+
+   THE PITCH IS THE SHOT. -0x800 of 8192 is -90 degrees, so the camera
+   opens looking straight up; the camera the setup writes is replaced
+   by the path on the first tick, but the angles are not.
+
+   g_CamCursor12 STARTS AT 0x100, not zero, so the path begins at key
+   1 and the duplicated key 0 is only ever P[-1].
+
+   PHASE 6 ENDED ON A MUSIC CUE AND SO DOES THIS ONE [verified,
+   0x002cc82e, 0x002cc8bc]. Each loop renders and polls 0x0021ff64,
+   leaving only when it answers; no fuse is seeded for phase 7 at all,
+   so what remains of phase 6's 0x2b8e keeps counting down while the
+   cue decides. Mode 0x12 does decrement that fuse and would raise
+   g_QuitRequested [verified, 0x002d6044], but the loop never looks at
+   it.
+
+   SO EVERY LENGTH FROM HERE IS MEASURED, NOT READ. A reconstruction
+   playing nothing has no cue to wait for. That also explains the
+   previous shot: its 136 ticks of phase 6 are a measured stand-in for
+   a cue, which is why it can look cut short.
+
+   MEASURED LENGTH: stepping the mode word on hardware, it still
+   reads 0x12 at 1375 frames and 0xa at 1388, so the cut lands between
+   [observed]. src/part_underside.c carries 1382. The cursor also puts
+   mode 0x12's start about eleven frames before that state: at 900
+   frames in it read 2078, which is 0x100 plus twice 911.
+
+2.  Nothing About The Effects Changes
+
+   Mode 0x12 advances the four effect clocks with the SAME increments
+   as mode 0x13 [verified, 0x002d5fec]:
+
+       g_BoltSeed     += 2         g_BoltPhase  += 0xc8
+       g_OrbSpinA     += 0x64      g_OrbSpinB   += 0xa
+
+   So the arcs wriggle and the orb's satellites orbit at exactly the
+   rate they did in the previous shot. It is the same effects from a
+   new camera, with nothing retuned - the glowing points circling the
+   sphere are the same ten Draw_GlowBlob satellites, on the same
+   g_RampBolt the bolts' own nodes use. effects/orb.txt 6.
+
+   WHAT IT DOES NOT TOUCH IS AS INFORMATIVE. It never writes
+   g_BeamPhaseA or g_BeamPhaseB, so both strengths stay where the last
+   shot left them and all six beams are permanently struck - there is
+   no growing head anywhere in this shot. And it never walks
+   g_pTurbulenceA or g_pTurbulenceB, which only a head's flare reads,
+   so the churn stops being computed because nothing would sample it.
+
+   g_OrbNearMode is still ZERO here [observed, on hardware], so the
+   orb is drawn by the ten-satellite branch throughout and not by
+   whatever the formed sphere becomes.
+
+   Two counters are stepped whose use is unread: 0x002e0afc by -0x100
+   and 0x002e0c1c by +0x14.
+
+3.  The Camera
+
+   THE PATH IS READ BEFORE THE CURSOR MOVES [verified, 0x002d5ff2 then
+   0x002d5ffe], so the camera a frame shows belongs to the cursor's
+   previous value. Getting that backwards puts every position one step
+   ahead of the demo's.
+
+   AND THE TWO SINES ARE NOT THE ANGLES. Camera_TrackTarget adds them
+   to the camera's own x and z to make a point to look at, and turns
+   that direction into the yaw and pitch [verified, 0x002d57bc] - so
+   the look DRIFTS around the orb rather than being aimed at it. Read
+   as angles instead, the position still matches the demo exactly and
+   the orientation is wrong, which looks like a path problem and is
+   not.
+
+   VERIFIED AT A MATCHED CURSOR: at cursor 2078 the camera comes back
+   (833, 2917, 3957) against the demo's (833, 2917, 3957) [observed,
+   on hardware]. The opening pitch reads -2051 against the setup's
+   -0x800.
+
+   THE ANGLES ACCUMULATE, SO THEY DRIFT RATHER THAN DIFFER.
+   Camera_TrackTarget negates before halving - neg.l D0 then asr.l #1
+   [verified, 0x002d57f2] - and asr floors, so (-d0) >> 1 and
+   -(d0 >> 1) part company by one for every odd d0. Space_CamMove then
+   ADDS the result into yaw and pitch rather than storing it, so a
+   single unit never cancels. Only the low word counts: the ext.l pair
+   at 0x002d671c sign-extends a word before each add.
+
+   VERIFIED AT THE INSTRUCTION. Halted at 0x002d57fa the deltas read
+   D0 -6 and D1 1, and the port's are -6 and 1 at every tick from 506
+   to 514 [observed, on hardware]. The pre-negation value is
+   11 there, and 11 is odd: -(11 >> 1) is -5 where (-11) >> 1 is -6,
+   so the old form lost a unit on every odd tick.
+
+   COUNTED IN ONE FRAME AT A MATCHED CAMERA, the envelope agrees
+   exactly. Stepping the per-face entry at 0x002cb3aa and draining a
+   watch on the gradient store in the same frame [observed, on
+   hardware, camera -4129 -2346 8878]:
+
+       +--------------------+-----------+-----------+
+       | one frame          | demo      | port      |
+       +====================+===========+===========+
+       | faces entering     | 9         | 9         |
+       | rejected           | 6         | 6         |
+       | rasterised         | 3         | 3         |
+       | dudx of the three  | -7 -7 +21 | -7 -7 +21 |
+       +--------------------+-----------+-----------+
+
+   The six rejected are two whole objects: one projects past the right
+   edge, x 173 to 187 of 160, and one sits entirely above the frame,
+   y -78 to -3. Three objects of three faces each is the whole of it;
+   D7's low word counts the faces down from 2 at each object's first
+   face.
+
+   AND subpix's FRACTION STAYS SIGNED. The demo works in whole
+   pixels: divsl.l truncates toward zero and so does C, so the
+   quotient already matches. The port keeps eight fraction bits beside
+   it, and every consumer recovers the pixel with >> RAST_FRAC, which
+   FLOORS - so a negative fraction hands back one less and a vertex
+   left of or above centre lands a pixel short. Only x shows it in
+   this shot, the envelope sitting below centre where the y quotient
+   is positive.
+
+   FORCING THE FRACTION NON-NEGATIVE BUYS THAT PIXEL AND DESTROYS
+   SUB-PIXEL MOTION. q truncates toward zero, so the stored value
+   stops being monotonic: a coordinate crossing -3 toward -4 comes out
+   -3.000, then -3+0.996, then -4.000, sliding backward before it
+   snaps. Every vertex left of or above centre then shears a pixel
+   back and forth as the object turns, which looks like integer-only
+   projection and is worse than the one-pixel offset it cures.
+
+   The two cannot both hold. trunc quantises the two sides of centre
+   differently, so the demo's own projection has a one-pixel
+   discontinuity there, and no monotonic reconstruction carries a
+   discontinuity. The fraction stays signed and the offset stays.
+
+   A SINGLE-FRAME SCORE CANNOT SEE THIS. fbcmp compares one frame, so
+   it rated the non-monotonic form 1.6 better - it fixes static
+   placement and breaks only motion, which the measure does not look
+   at. Judge a projection change by projected corners across several
+   ticks, not by a frame score.
+
+   WITH BOTH IN PLACE the whole camera matches. At
+   the tick whose camera equals the demo's render camera, position,
+   both angles and all three projected corners agree exactly:
+
+       +------------------+---------------------------+
+       | quantity         | demo and port             |
+       +==================+===========================+
+       | camera           | -4143, -2305, 8840        |
+       | yaw, pitch       | -1106, -1378              |
+       | face 0 corners   | (41,66) (59,67) (64,115)  |
+       | the two widths   | -18, -17                  |
+       +------------------+---------------------------+
+
+   AND THE FRAME PAIRING IS OFF BY ONE from the obvious reading. A
+   capture taken N frames on shows the render of frame N-1, because
+   the demo renders every second VBL; 500 frames on scores against
+   the port's tick 509, not 510, and the corner reads taken from a
+   breakpoint armed after that capture belong to tick 510. Scoring
+   the two against each other compares
+   consecutive renders and moves the result by about a whole unit of
+   mean luminance.
+
+   CamPath_AdvanceMode12 [verified, 0x002d661e]:
+
+       key = g_CamCursor12 >> 8
+       if key >= g_CamKeyCount12:          40
+           yaw = -0x120, pitch = 0, cursor = 0, key = 0
+       entry = g_pCamPath12 + 0xc + key * 12
+       CamPath_EvalTriple(entry, cursor & 0xff) -> x, y, z
+       camera = (x, y, z + 0x1388)
+
+   Twelve bytes a key, three longwords, forty keys, and the cursor
+   advances two a tick - so a full pass would take 5120 ticks, far
+   longer than the cue allows. The wrap exists but the shot does not
+   reach it.
+
+   THE +0xc SKIPS A DUPLICATED FIRST ENTRY, so key 0 can be
+   interpolated like any other.
+
+   THE KEYS COME OUT OF relic.dat. Space_LoadAssets calls Dat_LoadSplit
+   on Fspacedata with the slot table at g_SpaceDataSlots (0x002e472c)
+   and the sizes at g_SpaceDataSizes, carving the chunk into 67
+   sub-blocks; g_pCamPath12 is SLOT 64, at chunk offset 0x37da and 516
+   bytes long - 43 entries of twelve, which is the duplicated P[-1],
+   the forty keys, and two spare for the interpolator's lookahead
+   [verified]. In the file that is relic.dat offset 0x0020a9a4, and the
+   keys read there are identical to live memory - see below.
+   formats/geometry.txt 1.
+
+   AND CamPath_Setup'S SEED IS REDUNDANT. It writes (0, 0, 0x5a00)
+   over the first two entries, and the asset already holds exactly
+   that in both - so the duplication is baked into the data and the
+   code only rewrites what was there. Nothing depends on the call,
+   which is why the path looked unfilled: no analysed write reaches
+   g_pCamPath12 because Dat_LoadSplit stores through the slot table,
+   not through that address.
+
+   THEN TWO SINE-DRIVEN AIM ANGLES, taken off the cursor at different
+   rates so the look drifts rather than tracking anything:
+
+       g_CamAim12A = (sin[(cursor * 4) & 0x1fff] >> 3) - 0x2c3
+       g_CamAim12B =  sin[(cursor * 8) & 0x1fff] >> 4
+
+   VERIFIED LIVE at cursor 2078, which is key 8 at t 0x1e. Keys 8 and
+   9 read (432, 2873, -1069) and (4173, 2500, -1069) - in the file and
+   in guest memory alike - and the camera read (833, 2917, 3957), the z
+   being -1069 plus 5000 against 3957 [observed, on hardware 900
+   frames on].
+
+   THE BRANCH ON g_CamDebugDrive IS NOT PART OF THE SHOT. It is zero
+   in the demo; taken, it reads POTGOR at 0xdff016 and adds straight
+   to the camera, which is a mouse drive left in the build.
+
+4.  The Light Base Decides The Orb's Core
+
+   Ham8_BuildTables IS CALLED TWICE IN Space_RunPart, with different
+   colours, and the second is this shot's [verified]:
+
+       0x002cc590   0x3f, 0x4f, 0x6f   mode 6, the orb forming - 2.10
+       0x002cc958   0x5f, 0x5f, 0x7f   this phase - 2.11
+
+   IT DECIDES WHAT THE BRIGHTEST PIXELS BECOME, not just a tint. The
+   resolve fades a pixel toward the base by its light byte, and the
+   fade is total once the light passes 0x3f: d5 is 0xff - 4 * light
+   clamped at zero, so a light of 64 or more leaves the pixel EXACTLY
+   the base colour whatever its own channels held. Seven or eight
+   pixels a frame reach that in this shot, in one small cluster at
+   the orb's core, and they read as high as 108 [observed, ticks 408
+   to 431].
+
+   SO A MISSING BASE IS NOT A MISSING TINT, IT IS A BLACK HOLE. Every
+   other ship and space part sets its own; this one did not, and took
+   whatever the part before it left. Reached from a part whose base is
+   dark - src/part_credits.c uses 0, 0, 0 - that cluster resolves to
+   black inside the brightest part of the orb. It is only visible
+   once something pushes the light past 0x3f there, which is why it
+   surfaced with the centre flare and the band rather than before.
+
+5.  Open questions
+
+   -  WE DRAW LESS LIGHT THAN THE DEMO AS THE SHOT GOES ON. Byte +2
+      measured against the hardware, the demo's render target against
+      ours at the same tick of the camera path [observed]:
+
+          tick    demo lit   max   total      ours lit   max   total
+           500         879    66   29181           873   108   29475
+           700        2530    84   97301          1673    84   58057
+
+      At 500 the two agree in count and total and 478 of the lit
+      pixels are the same pixels; by 700 we carry about three fifths
+      of the demo's light. FOUR CANDIDATES ARE RULED OUT [observed]:
+
+        o  the horizon band, which subtracts light - it costs 1625
+           of the 39244, four per cent
+        o  the attach flares, which add NO light in either, because
+           byte +2 of the amber ramp reads 00 on the hardware
+        o  the ten-satellite loop's geometry - 0x002d2b3c is the
+           0x2800 ring, size 0x1e, steps 0x333 and 0x514, ten times,
+           which is what src/orbscene.c already does
+        o  its ramp and its blitter - 0x002cefa4 IS Draw_GlowBlob,
+           and the table at 0x002f06b0 reads back byte for byte as
+           our g_RampBolt, 0x3f flat to entry 129 then down by one
+           every second entry
+
+      All ten satellites project and draw at tick 700, depths 4412 to
+      5642 and radii 10 to 13, so nothing is being rejected either.
+
+      WHAT IS LEFT is where the light is missing, which is two places
+      and not one: a solid core at the orb that we draw as a ring of
+      ten separate blobs, and diagonal streaks on the left that are
+      beam-shaped. So the shortfall is not one cause, and the next
+      measurement wants the demo's own light decomposed - a hit
+      counter on Draw_GlowBlob would say how many blobs it draws a
+      frame, which ours cannot be short of at ten.
+
+      AN EARLIER READING OF THIS HELD THAT THE DEMO'S LIGHT PLANE WAS
+      EMPTY - not one non-zero byte +2 - and it does not reproduce.
+      Driven to the matched tick by g_CamSrcX/Y/Z and read out of the
+      render target, the demo has 879 lit pixels there. Treat a light
+      measurement as suspect unless the frame was matched on the
+      camera and the buffer named: amiga_fb's PPM drops byte +2
+      entirely, and a work buffer carries no effects at all.
+
+   -  Phases 8 and 9 do not set a light base of their own, so they
+      inherit 2.11's. Whether the demo rebuilds the tables again for
+      them is unread.
+
+   -  The shot's length in ticks, which needs a watch on the mode word
+      across the whole phase.
+
+   -  What 0x002e0afc and 0x002e0c1c drive.
+
+   -  Phases 8 and 9, which follow the same shape: mode 0xa ending on
+      cue (0x20, 0), then mode 0xb, which DOES use the fuse and renders
+      through 0x002cd8fe rather than Scene_RenderFrame.

@@ -1,0 +1,377 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                    THE DISPLAY, AND THE COPPER LISTS
+
+
+Abstract
+
+   THE LIGHT BYTE'S MEANING IS PER SCENE. Ham8_BuildTables blends
+   each pixel toward a base colour by the light amount, and the
+   base is whatever the scene passes: Space_RunPart passes
+   (0x3f, 0x4f, 0x6f) so light brightens toward blue-white, and
+   maybe_Space_RunSunScene passes (0, 0, 0) so the same byte
+   DARKENS. Scene_DrawVignette depends on the second reading.
+   subsystems/effects.txt section 8.
+
+   RELIC does not assemble its copper lists from nothing. Each one is
+   a STATIC SKELETON authored into CODE_05, the chip-RAM hunk, with
+   every pointer data word left zero. Code fills those words in and
+   points COP1LC at the list. A static read of the image therefore
+   finds what look like inert or blanking lists, and the interesting
+   half is all zeros until the demo runs.
+
+   TWO DIFFERENT SCREENS, AND NOT THE SAME MODE. The space scene is
+   HAM8. The part at 0x310000 is six bitplanes and 64 indexed
+   colours. Both feed from their own chunky buffer through
+   their own copy of a chunky-to-planar converter.
+
+Table of Contents
+
+   1. Where the lists live, and who installs them
+   2. The HAM8 screen
+   3. The 64-colour screen
+   4. The slice builder
+   5. The pointer patchers
+   6. The chunky-to-planar converter
+   7. The palette
+   8. The HAM8 pipeline, end to end
+   9. What is still missing
+   10. Open questions
+
+1.  Where the lists live, and who installs them
+
+   COP1LC is 0x80 off the custom base. The demo almost always holds
+   0xdff000 in A5, so the writes are base-relative and invisible to a
+   search for the absolute address - which is why they are easy to
+   miss.
+
+   Six installs write a register, three write an immediate:
+
+    site                      list          what it is
+    ------------------------  ------------  --------------------------
+    Space_DisplayOn 002d5410  0x343374      HAM8, or 0x34437c if
+                                            g_OptHires is set
+    FUN_003102c2    003102dc  0x345478      6 planes, 64 colours
+    FUN_00313830    00313860  (register)    unread
+    FUN_0031667a    00316698  (register)    unread
+    FUN_0033bcc0    0033bcd0  (register)    unread
+    FUN_0037210a    00372128  (register)    unread
+    FUN_002ceca4    002cecc4  0x343298      1 plane, small window
+    FUN_002cecd2    002cecf2  0x3432e0      1 plane, small window
+    FUN_002c9918    002c99d8  0x345384      unread
+
+   Installing is always the same two instructions followed by a
+   strobe: move.l A0,(0x80,A5) then clr.w (0x88,A5), which is COPJMP1.
+
+   The lists at 0x2c8228 and 0x34546c are genuine blanking lists -
+   BPLCON0 = 0, COLOR00 = 0, end - used to turn the display off
+   between parts.
+
+2.  The HAM8 screen
+
+   g_CopperHam8 at 0x343374, installed by Space_DisplayOn. The header
+   is static and readable [verified]:
+
+    WAIT   VP=2f HP=04
+    DDFSTRT  0034      DDFSTOP  00b8
+    DIWSTRT  3e83      DIWSTOP  00bf
+    BPLCON0  8811      HIRES=1  BPU=8  HAM=1  ECSENA=1
+    BPLCON1  0000      BPLCON2  0000   BPLCON3 0000  BPLCON4 0000
+    BPL1MOD  ffb0      BPL2MOD  0000
+    FMODE    4047
+    BPL3PTH..BPL8PTL   zeroed, patched by Copper_PatchPlanesHam8
+    then 200 slices    zeroed, built by Copper_BuildSlices
+
+   BPLCON0 = 0x8811 IS THE WHOLE ANSWER: bit 15 HIRES, bit 11 HAM, and
+   BPU = 8 once bit 4 is folded in as the AGA high bit. Eight planes
+   with HAM set is HAM8.
+
+   DIWSTRT/DIWSTOP give a window of H 131..447 and V 62..256, so
+   roughly 640 hires pixels by 194 lines, and Copper_BuildSlices emits
+   exactly 200 slices. Call it 640 x 200.
+
+   2.1  HAM8 smears horizontally, and the star trails are NOT it
+
+   Hold-And-Modify spends six of its eight bits on data and two on
+   control. Control 00 takes the six bits as one of 64 palette
+   indices; 01, 10 and 11 replace the R, the G or the B of the
+   PREVIOUS PIXEL and hold the other two. So a run of pixels can only
+   change ONE CHANNEL AT A TIME, and moving from one arbitrary colour
+   to another takes up to three pixels.
+
+   A BRIGHT STAR ON DARK SKY THEREFORE HAS A GRADED TAIL. The star's
+   own pixel is right; the next pixels have to bring R, then G, then B
+   back down, one per pixel, so each is dimmer than the last. A viewer
+   sees the star plus two or three fading copies beside it and reads
+   them as previous positions - but they are the pixels to one side,
+   not earlier frames. The planet's edge against the sky smears the
+   same way, for the same reason [observed].
+
+   THE SMEAR CANNOT ACCOUNT FOR THE OBSERVED TRAILS. A viewer reports
+   a star, then background for several pixels, then a dimmer copy of
+   the star, and some of the trails running DIAGONALLY [observed].
+   Hold-and-modify can only alter the pixel immediately after, on the
+   same scanline - it cannot skip pixels and cannot leave the line -
+   so whatever makes those copies is not this.
+
+   NOR IS IT IN THE DRAWING CODE, and two measurements say so. A write
+   watch over one framebuffer row shows Scene_DrawTexturedSky writing
+   each pixel exactly ONCE per frame from a single PC, which rules out
+   the scene being drawn several times at different times. And
+   Ham8_EncodeFrame (0x002ca2a8) is a single-pass chunky-to-planar: it
+   reads the 4-byte framebuffer once, looks each pixel up in two
+   tables and XOR-transposes into bitplanes, with no second source and
+   no blending. So there is no accumulation buffer, no fade, and no
+   multi-pass star draw anywhere in the render.
+
+   WHAT IS LEFT UNEXAMINED is the display path - the plane buffers the
+   copper cycles, Copper_BuildSlices' 200 slices - and the emulator's
+   own display filtering. The mechanism is OPEN.
+
+   WITH THE HIRES SWITCH it installs g_CopperHam8Hires at 0x34437c
+   instead:
+
+    BPLCON0  0a51      SHRES=1  BPU=8  HAM=1  COLOR=1  ECSENA=1
+    DIWSTRT  5cd1      DIWSTOP  be71
+    FMODE    0047
+
+   Super-hires HAM8, and the window is H 209..369 by V 92..190 -
+   640 super-hires pixels by EXACTLY 98 LINES. That is the readme's
+   "snapshots are 640 x 98" and its "hires mode in a small window
+   instead of the usual 2x2 mode", both confirmed from the hardware
+   registers [verified].
+
+3.  The 64-colour screen
+
+   g_Copper6Plane at 0x345478, installed by FUN_003102c2:
+
+    WAIT   VP=28 HP=04
+    DDFSTRT  0034      DDFSTOP  00a4
+    DIWSTRT  6c81      DIWSTOP  ebc1
+    BPLCON0  6001      HIRES=0  BPU=6  HAM=0  ECSENA=1
+    BPLCON2  0200      KILLEHB
+    BPL1MOD  0000      BPL2MOD  0000
+    FMODE    0007
+    BPL1PTH..BPL6PTL   zeroed, patched by Copper_PatchPlanes6
+
+   Lores, six bitplanes, HAM off, and KILLEHB set so the upper 32
+   registers are real colours rather than half-brights. Six planes is
+   64 colours directly.
+
+   The window is H 129..449 by V 108..235: 320 x 128. A plane is
+   therefore 40 bytes per row times 128 rows = 5,120 bytes, which is
+   the 0x1400 stride the converter and the patcher both use, and
+   320 x 128 = 40,960 is exactly the pixel count the converter
+   produces.
+
+   THE SIXTY-FOUR COLOUR REGISTERS HERE ARE EXPLAINED BY THE PLANE
+   COUNT, NOT BY HAM. Six planes need 64 entries. An earlier reading
+   of this project took 64 registers plus a chunky-to-planar step as
+   evidence of HAM8; the copper list says otherwise, and the plane
+   count in both the converter and the patcher is six, not eight.
+
+4.  The slice builder
+
+   Copper_BuildSlices (0x002d5384) is the routine that actually
+   BUILDS copper instructions at run time [verified]:
+
+       move.w  #0xc7,D7w          ; 200 iterations
+       move.w  #0x3dc1,D0w        ; first WAIT word, VP=0x3d
+       move.l  #0x3431a8,D2       ; g_Ham8LowPlane1
+       move.l  #0x3431f8,D3       ; g_Ham8LowPlane2
+       lea     g_CopperHam8Slices,A0      ; 0x3443e0 if g_OptHires
+     .loop
+       move.w  D0w,(A0)+          ; WAIT first word
+       move.w  #-2,(A0)+          ; WAIT second word, 0xfffe
+       addi.w  #0x100,D0w         ; next scanline
+       move.w  D2w,(0x6,A0)       ; BPL1PTL
+       swap D2 ; move.w D2w,(0x2,A0)      ; BPL1PTH
+       swap D2 ; addq.l #0x8,A0
+       move.w  D3w,(0x6,A0)       ; BPL2PTL
+       swap D3 ; move.w D3w,(0x2,A0)      ; BPL2PTH
+       swap D3 ; addq.l #0x8,A0
+       dbf     D7w,.loop
+
+   200 slices of 20 bytes, one per scanline: a WAIT for the next line
+   then a re-point of bitplanes 1 and 2.
+
+   D2 AND D3 ARE NEVER ADVANCED. Every slice points BPL1 and BPL2 at
+   the same two fixed addresses, 0x50 = 80 bytes apart, so the two
+   lowest bitplanes repeat one 80-byte pattern on every scanline while
+   BPL3..BPL8 scroll normally. 80 bytes is 640 bits, one per pixel of
+   the display width.
+
+   WHAT THAT FIXED LOW-PLANE PATTERN IS FOR HAS NOT BEEN READ, and it
+   is the most interesting thing left in the display path. In HAM8 the
+   low planes are part of the six-bit payload, so a constant pattern
+   there is a per-pixel bias applied identically on every line - a
+   dither, or a fixed ramp that the six upper planes modulate.
+
+5.  The pointer patchers
+
+   Copper_PatchPlanes6 (0x003106f4) is the simple one and worth
+   reading as the model for the shape:
+
+       lea     g_Copper6PlanePtrs,A0   ; the BPL1PTH MOVE itself
+       move.l  g_ScreenShown,D0
+       addi.l  #0x28,D0                ; +40 bytes
+       moveq   #5,D7                   ; dbf 5 -> six planes
+     .loop
+       move.w  D0w,(0x6,A0)            ; low word  -> BPLxPTL data
+       swap    D0
+       move.w  D0w,(0x2,A0)            ; high word -> BPLxPTH data
+       swap    D0
+       addq.l  #0x8,A0                 ; next PTH/PTL pair
+       addi.l  #0x1400,D0              ; next plane
+       dbf     D7w,.loop
+
+   The data word of a copper MOVE is at +2 of the instruction, so a
+   PTH/PTL pair is 8 bytes and its two data words are at +2 and +6.
+   That is the whole idiom, and it is how every pointer in every list
+   here gets written.
+
+   Copper_PatchPlanesHam8 (0x002d5312) does the same for BPL3..BPL8 of
+   the HAM8 list at g_CopperHam8Ptrs (0x3433a8), and also patches
+   DDFSTRT and the display window at 0x343380.
+
+6.  The chunky-to-planar converter
+
+   C2p_Chunky_To6Plane (0x00310792). Reads 8 longwords - 32 chunky
+   bytes, one per pixel - and writes one longword into each of six
+   bitplanes, 32 pixels per pass. All five merge levels:
+
+   +-------+------------+---------------------------------------------+
+   | Shift | Mask       | Level                                       |
+   +=======+============+=============================================+
+   |    16 | -          | swap and move.w pairs, not a mask           |
+   +-------+------------+---------------------------------------------+
+   |     8 | 0x00ff00ff | byte                                        |
+   +-------+------------+---------------------------------------------+
+   |     4 | 0x0f0f0f0f | nibble                                      |
+   +-------+------------+---------------------------------------------+
+   |     2 | 0x33333333 | two-bit                                     |
+   +-------+------------+---------------------------------------------+
+   |     1 | 0x55555555 | one-bit; the lsl is written add.l D7,D7     |
+   +-------+------------+---------------------------------------------+
+
+   A1, A2, A5 and A6 are pressed into service as data registers
+   through exg, because six planes need more live values than D0-D7.
+
+   1,280 passes, 40,960 pixels, plane stride 0x1400, frame 30,720
+   bytes. Three screens rotate through g_ScreenBuffers; the chunky
+   source is double buffered through g_pChunkyFront / g_pChunkyBack
+   and built by maybe_Blend_BuildChunky (0x003104a4), which combines
+   two 0xa000 buffers through a lookup table.
+
+   AT LEAST EIGHT COPIES OF THE CONVERTER EXIST, one per part, inlined
+   rather than shared, findable by their masks:
+
+    0x00310792  C2p_Chunky_To6Plane         0x33333333 form
+    0x00313a5c  C2p_Chunky_To6Plane_b       0x33333333 form
+    0x002ca1a4  maybe_C2p_Variant_Space     0xcccc3333 form
+    0x002ca2a8  maybe_C2p_Variant_Space2    0xcccc3333 form
+    0x00315fbc  maybe_C2p_Variant_c         0xcccc3333 form
+    0x003160c0  maybe_C2p_Variant_d         0xcccc3333 form
+    0x0036db6c  maybe_C2p_Variant_Temple    0xcccc3333 form
+    0x0036dc70  maybe_C2p_Variant_Temple2   0xcccc3333 form
+
+   Only the first has been read. The 0xcccc3333 form folds two levels
+   together, which suggests a different plane count, and the space
+   scene's HAM8 screen has eight planes rather than six - so do not
+   assume one converter serves the demo.
+
+7.  The palette
+
+   Pal_Set64 (0x00310a36) loads colour registers in a dbf from 0x3f,
+   so exactly 64, index reversed with eori.w #0x3f. Entries are read
+   one longword at a time from a table with a 16-byte stride, and
+   maybe_Part310_MainLoop picks a table with index * 0x400 +
+   g_PaletteTables - so 64 x 16 = 1024 bytes per palette and several
+   palettes in a row.
+
+   Pal_ScaleLongword (0x00310a58) is the whole fade: each of the four
+   bytes is multiplied by g_PalFadeScale in 8.8, offset by
+   g_PalFadeOffset, and clamped to 0xff on carry rather than wrapped.
+   Four ror.l #8 steps walk the bytes and leave the longword in its
+   original rotation.
+
+8.  The HAM8 pipeline, end to end
+
+   The chain from a textured triangle to a HAM8 scanline
+   [verified]:
+
+    1  Rast_TexturedPoly, Warp_FullscreenAffine and Draw_LineAA write
+       g_pFrameBuffer: 160 x 100, FOUR bytes per pixel, six-bit
+       channels - subsystems/renderer.txt
+    2  Ham8_EncodeFrame (0x002ca2a8) reads all 16,000 pixels and
+       writes SIX bitplanes of 8,000 bytes
+    3  Copper_PatchPlanesHam8 points BPL3..BPL8 at those six planes,
+       stride 0x1f40 = 8,000 - the same number
+    4  Copper_BuildSlices points BPL1 and BPL2 at a fixed 80-byte
+       pattern, re-pointed on every one of 200 scanlines
+    5  g_CopperHam8 displays it: HIRES, 8 planes, HAM bit set
+
+   THE COUNTS CLOSE EXACTLY. Ham8_EncodeFrame runs 2,000 iterations of
+   8 pixels = 16,000 = 160 x 100, and 8,000 bytes per plane at 80
+   bytes per row is 100 rows of 640 pixels. So 160 rendered pixels
+   become 640 HAM8 pixels: FOUR HAM8 PIXELS PER RENDERED PIXEL, which
+   is exactly what HAM8 needs to build one full-colour pixel out of
+   successive red, green and blue modifies. The 1:4 ratio falls out
+   of the arithmetic rather than being assumed.
+
+   THE ENCODE IS THREE TABLE LOOKUPS OR'D TOGETHER:
+
+       move.l (A0)+,D1                   ; pixel, 0xRRGG??BB
+       move.l (0x0,A5,D1w*0x8),D0        ; index on 0x??BB
+       lsr.l  #0x8,D1
+       or.l   (0x4,A5,D1w*0x8),D0        ; index on 0xGG??
+       lsl.w  #0x8,D1w ; lsr.l #0x8,D1
+       or.l   (0x0,A6,D1w*0x4),D0        ; index on 0xRRGG
+
+   Three overlapping 16-bit windows into the pixel, three tables
+   owning disjoint bit positions, OR'd into one planar longword.
+
+   ONLY THE 4-BIT AND 8-BIT MERGE LEVELS FOLLOW, not the full five of
+   a normal c2p. The finer interleave is already baked in, because
+   Ham8_BuildTables (0x002ca456) ran every table entry through
+   Ham8_TransposeLongword before storing it. THAT IS THE TRICK OF THE
+   WHOLE DISPLAY PATH: one indexed read does the colour conversion and
+   most of the chunky-to-planar transpose at the same time.
+
+   Ham8_BuildTables makes 0x80 x 0x100 entries, saturating each
+   channel at 0x3f00, splitting each transposed result with the masks
+   0x03330333, 0x04440444 and 0x08880888.
+
+   BYTE +2 OF A FRAMEBUFFER PIXEL IS A REAL CHANNEL. Draw_LineAA
+   writes 0x3f into it for the line and adds 0xf to the pixel either
+   side, which is antialiasing coverage, and the encode's three
+   windows all overlap it. It is zero in every TEXEL of every asset
+   chunk, which is why formats/textures.txt measured it as a pad -
+   that is true of the texture data and not of the framebuffer.
+
+9.  What is still missing
+
+   WHAT THE OTHER FOUR REGISTER-INSTALLED LISTS ARE. Four install
+   sites load COP1LC from a register whose source has not been
+   traced.
+
+10. Open questions
+
+   o What is the 80-byte fixed pattern that every slice points BPL1
+     and BPL2 at? Section 4. With BPL3..BPL8 carrying the frame, bits
+     0 and 1 of every HAM8 pixel come from this pattern, so it is a
+     fixed two-bit dither applied identically to all 200 lines.
+   o What exactly does byte +2 of a framebuffer pixel mean? It is
+     written by Draw_LineAA as coverage and it is inside all three
+     encode windows, but nothing separates its contribution from the
+     colour channels.
+   o Why does the 6-plane patcher add 0x28 to the frame base?
+   o What are the other 12 bytes of each 16-byte palette entry?
+     Pal_Set64 reads one longword and skips three.
+   o BPL1MOD is -80 on the HAM8 list and 0 on the 64-colour list. A
+     negative modulo on the odd planes only would make them re-read
+     the same line; whether that is the vertical half of "2x2 mode"
+     is untested.
+   o Does anything use the blitter? DMACON enables BLTEN but no
+     blitter register write has been found.

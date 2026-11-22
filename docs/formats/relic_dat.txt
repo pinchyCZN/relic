@@ -1,0 +1,341 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                        THE RELIC.DAT ARCHIVE
+
+
+Abstract
+
+   relic.dat is a flat uncompressed archive: a longword count, a
+   directory of fixed 36-byte records, then the payloads back to back.
+   14 entries, 4,068,002 bytes, and the chunks tile the file from the
+   end of the directory to the last byte with no gaps, no overlaps and
+   no tail [verified].
+
+   Its value to this project is out of proportion to its simplicity.
+   THE CHUNK NAMES ARE THE DEMO'S OWN NAMES FOR ITS PARTS - plasma,
+   crust, earth, sprout, templelog, aztecterrain, aztectextures,
+   shiptextures, wadepic, spacedata, armdata - and CLAUDE.md rule 6.1
+   says to use them over descriptive ones.
+
+   The format is read; the content of the individual chunks is not.
+
+Table of Contents
+
+   1. The record layout
+   2. The directory
+   3. The name prefix is the memory pool
+   4. Loading, and splitting into sub-blocks
+   5. What the chunks contain
+   6. Open questions
+
+1.  The record layout
+
+   Big-endian throughout, consistent with the 68000 host.
+
+    offset  size  field
+    ------  ----  ---------------------------------------------------
+    0x0000     4  u32 count           number of entries
+    0x0004  36*n  entry[count]        the directory
+    varies         payloads, back to back in no particular order
+
+   One entry, 36 bytes:
+
+   +--------+------+----------+------------+---------------------------------+
+   | Offset | Size | Type     | Confidence | Notes                           |
+   +========+======+==========+============+=================================+
+   | +0x00  |   16 | char[16] | verified   | name, SPACE padded, NOT NUL     |
+   |        |      |          |            | terminated. Trailing spaces are |
+   |        |      |          |            | padding, not part of the name   |
+   +--------+------+----------+------------+---------------------------------+
+   | +0x10  |    4 | u32      | verified   | byte offset of the payload from |
+   |        |      |          |            | the start of relic.dat          |
+   +--------+------+----------+------------+---------------------------------+
+   | +0x14  |    4 | u32      | verified   | payload length in bytes         |
+   +--------+------+----------+------------+---------------------------------+
+   | +0x18  |    4 | u32      | verified   | size1: headroom allocated       |
+   |        |      |          |            | BEFORE the data. Non-zero only  |
+   |        |      |          |            | for Ftemplelog                  |
+   +--------+------+----------+------------+---------------------------------+
+   | +0x1c  |    4 | u32      | verified   | size2: headroom allocated after |
+   |        |      |          |            | the data                        |
+   +--------+------+----------+------------+---------------------------------+
+   | +0x20  |    4 | ptr      | verified   | RUNTIME ONLY: the allocation    |
+   |        |      |          |            | base. Zero on disk; filled in   |
+   |        |      |          |            | by Dat_LoadChunk, cleared by    |
+   |        |      |          |            | Dat_FreeChunk                   |
+   +--------+------+----------+------------+---------------------------------+
+
+   The field names and widths come from the offsets Dat_LoadChunk
+   (0x0021fab0) and Dat_FreeChunk (0x0021f93e) actually load, and the
+   0x24 stride from the lea (0x24,A1),A1 advance both use to step to
+   the next entry [verified]. The Ghidra type is Relic_DatEntry.
+
+   AT RUN TIME THE WHOLE DIRECTORY IS A 50-ENTRY ARRAY IN BSS, at
+   g_DatDirectory (0x002c797c). BSS_01 is 1,800 bytes, which is
+   exactly 50 x 36, so the table is sized for 50 chunks and this
+   archive uses 14 of them.
+
+   The offset and length fields are [verified] rather than [inferred]
+   because the chain closes exactly: the first payload begins at
+   0x0001fc, which is 4 + 14*36 = 508, the byte immediately after the
+   directory, and each chunk's end is the next chunk's start in offset
+   order through to 0x3e12a2, the file size.
+
+    py -3.10 tools/dat/datlist.py            the directory
+    py -3.10 tools/dat/datlist.py --verify   re-prove the tiling
+
+2.  The directory
+
+   In directory order, which is NOT offset order [verified].
+
+    #   name             offset      size        end         pool
+    --  ---------------  ----------  ----------  ----------  ----
+    0   Cmodule1         0x000001fc  0x000c8d14  0x000c8f10  CHIP
+    1   Fwadepic         0x001abdde  0x0002b3ec  0x001d71ca  FAST
+    2   Faztecterrain    0x003adb0e  0x0000c000  0x003b9b0e  FAST
+    3   Ftemplelog       0x001d71ca  0x00030000  0x002071ca  FAST
+    4   Fspacedata       0x002071ca  0x0000bdde  0x00212fa8  FAST
+    5   Fshiptextures    0x00212fa8  0x000c0000  0x002d2fa8  FAST
+    6   Fplasma          0x0033bb0e  0x00040000  0x0037bb0e  FAST
+    7   Fcrust           0x002d2fa8  0x00040000  0x00312fa8  FAST
+    8   Fearth           0x00312fa8  0x00015900  0x003288a8  FAST
+    9   Fsprout          0x003288a8  0x00013266  0x0033bb0e  FAST
+    10  Farmdata         0x003b9b0e  0x000130d4  0x003ccbe2  FAST
+    11  Cmodule2         0x000c8f10  0x000e2ece  0x001abdde  CHIP
+    12  Frelicdata       0x003ccbe2  0x000146c0  0x003e12a2  FAST
+    13  Faztectextures   0x0037bb0e  0x00032000  0x003adb0e  FAST
+
+   THE EXECUTABLE ASKS FOR NAMES THIS ARCHIVE DOES NOT HAVE. A table
+   of 16-byte names at SEG0+0x188ec reads
+
+    Cmodule1  Cmodule2  Cmodule3  Cmodule4  Fpart1data
+
+   [verified], and neither Cmodule3, Cmodule4 nor Fpart1data is in the
+   directory. Either the lookup tolerates a miss or this relic.dat is
+   not the one that table was written for. Section 5.
+
+3.  The name prefix is the memory pool
+
+   C means chip RAM and F means fast RAM [verified]. Dat_LoadChunk
+   tests the first byte of the name directly:
+
+       cmpi.b  #0x43,(A1)          0x43 is 'C'
+       bne.b   .notchip
+       movea.l g_ChipMemPool,A4
+
+   so a name beginning with C is allocated from the chip pool and
+   everything else from the fast pool. Dat_FreeChunk makes the mirror
+   decision by ADDRESS instead - anything above 0x200000 is treated as
+   fast RAM - which is why the two must agree.
+
+   Three further pieces of evidence agree with the code:
+
+   o THE TWO C CHUNKS ARE THE MUSIC. Cmodule1 and Cmodule2 are the
+     only C entries, and a Player 6.1 module's sample data must be in
+     chip RAM because Paula's audio DMA cannot reach fast RAM. The
+     replayer is identified in subsystems/music.txt.
+   o THE TOTALS MATCH THE DEMO'S OWN REQUIREMENTS SCREEN. It tests for
+     1700 Kb of free chip RAM and 4000 Kb of free fast RAM [verified,
+     SEG0+0x01843e and SEG0+0x01846b]:
+
+    pool  archive      MEMF hunks   total      demo asks for
+    ----  -----------  -----------  ---------  -------------
+    FAST  2,261.2 KB    1,666.7 KB  3,927.9 KB      4,000 KB
+    CHIP  1,711.0 KB      146.2 KB  1,857.2 KB      1,700 KB
+
+     The fast figure lands within 2 per cent of the stated budget,
+     which is what a developer sizing a requirement off actual usage
+     would produce.
+   o THE HUNKS USE THE SAME SPLIT. Hunks 2 and 5 are MEMF_CHIP and the
+     other five are MEMF_FAST - see formats/hunk.txt 2.1.
+
+   The chip row OVERSHOOTS its budget by 157 KB, and that is
+   informative rather than a problem with the inference: the two
+   modules cannot both be resident under a 1700 KB ceiling, let alone
+   alongside bitplanes. So the modules are loaded one at a time
+   [inferred], and the largest of them, Cmodule2 at 907.7 KB, plus the
+   146.2 KB of chip hunks leaves roughly 646 KB for display memory.
+
+4.  Loading, and splitting into sub-blocks
+
+   Two routines in CODE_00 are the whole API, and both find an entry
+   by linear search of g_DatDirectory comparing 16 bytes with cmpm.b.
+
+   Dat_LoadChunk (0x0021fab0), in A0 a name, out D0 a pointer:
+
+       Seek(file, entry.offset, OFFSET_BEGINNING)
+       total = size0 + size1 + size2
+       base  = AllocMem(total, chip pool if name starts with C else fast)
+       entry.ptr = base
+       Read(file, base + size1, size0)
+       return base + size1
+
+   THREE THINGS IN THAT ARE EASY TO GET WRONG:
+
+   o The allocation is size0+size1+size2 but only size0 is read.
+   o The data lands at base+size1, NOT at base. Only Ftemplelog has a
+     non-zero size1, and it is large - 0x20000 - so a reader that
+     assumes the payload starts at the allocation base is correct for
+     thirteen chunks and badly wrong for the fourteenth.
+   o The returned pointer is base+size1, so the caller never sees the
+     front headroom. Only entry.ptr remembers the real base, which is
+     why Dat_FreeChunk frees entry.ptr and not what the caller holds.
+
+   On a failed AllocMem it clears 0xdff106 and writes 0xf00 to COLOR00
+   at 0xdff180, then spins on the left mouse button at 0xbfe001 bit 6.
+   A red screen on startup is out of memory, not a crash.
+
+   g_AllocTotal (0x002371f8) is incremented by total here and
+   decremented by Dat_FreeChunk. That counter is what the exit message
+   about memory imbalance reports on.
+
+   Dat_LoadSplit (0x0021fa94) is the layer every part actually calls:
+
+       in  A0  the 16-byte name
+           A1  -> u32 count, then room for count pointers IT FILLS IN
+           A2  -> u32 size[count], the stride for each step
+
+       base = Dat_LoadChunk(A0)
+       for i in 0..count-1:  ptr[i] = base;  base = base + size[i]
+
+   THE SUB-STRUCTURE OF EVERY CHUNK LIVES IN THE EXECUTABLE, not in
+   relic.dat. The archive knows only a chunk length; what is inside it
+   is defined by whichever size table the calling part passes. So
+   recovering a chunk layout means finding its Dat_LoadSplit call site
+   and reading the two lea operands - and the sizes always sum to
+   exactly the chunk length, which is the check that a table has been
+   read correctly.
+
+   FAZTECTEXTURES IS FORTY TILES OF 64 BY 64, EACH WITH ITS OWN
+   PALETTE - 0x400 bytes of 256 longwords then 0x1000 one-byte
+   indices, 0x1400 a tile, 204800 bytes in all [verified]. Temple_Init
+   splits them 24 ground and 16 wall. The palette entry is shuffled
+   exactly as the ground images are, 0xAABBCCDD to BB CC 00 DD masked
+   and shifted right two, so every channel is six bits.
+
+   THE TILES CARRY THEIR OWN LIGHTING. The stone blocks have
+   directional highlight and shadow painted into them and the
+   archways have their interiors painted dark, and there are light
+   and dark variants of the same stone in the ground set. A separate
+   128 by 128 shade map rides in Faztecterrain alongside the tile and
+   height maps and is applied per cell on top of that, so the shading
+   is partly baked and partly run time.
+
+   tools/dat/texpng.py writes both sets out as atlases.
+
+   Call sites found so far:
+
+   +------------------------+----------------+--------+--------------+
+   | Caller                 | Chunk          | Count  | Size table   |
+   +========================+================+========+==============+
+   | Space_LoadAssets       | Fspacedata     |     67 | 0x002e483c   |
+   +------------------------+----------------+--------+--------------+
+   | Space_LoadShipTextures | Fshiptextures  |      4 | 0x002e4948   |
+   +------------------------+----------------+--------+--------------+
+   | Relic_Init             | Frelicdata     |      3 | 0x00313f14   |
+   +------------------------+----------------+--------+--------------+
+
+5.  What the chunks contain
+
+   Decoded so far:
+
+   +----------------+-----------+--------------------------------------------+
+   | Chunk          | Bytes     | Contents                                   |
+   +================+===========+============================================+
+   | Fspacedata     |    48,606 | 21 3D objects, then a 4-entry tail         |
+   |                |           | [verified] - formats/geometry.txt          |
+   +----------------+-----------+--------------------------------------------+
+   | Fshiptextures  |   786,432 | 4 textures: 256x256, 256x256, and two of   |
+   |                |           | half the size [verified] -                 |
+   |                |           | formats/textures.txt                       |
+   +----------------+-----------+--------------------------------------------+
+   | Fcrust         |   262,144 | one 256x256 texture, seamless stone        |
+   |                |           | [verified]. THE ORB IN THE RELEASE SCENE - |
+   |                |           | bright plates, near-black cracks, and a    |
+   |                |           | LIGHT byte of zero throughout -            |
+   |                |           | effects/orb_release.txt 4                  |
+   +----------------+-----------+--------------------------------------------+
+   | Fplasma        |   262,144 | 65,536 texels in the same 4-byte format;   |
+   |                |           | 256x256 assumed, not confirmed             |
+   +----------------+-----------+--------------------------------------------+
+   | Fwadepic       |   177,132 | IFF ILBM. Opens FORM, length 0x0002b3e4,   |
+   |                |           | ILBM, then an ANNO chunk [verified]        |
+   +----------------+-----------+--------------------------------------------+
+   | Fsprout        |    78,438 | magic SPRT, then an OCTREE: 3862 leaves    |
+   |                |           | at +4 and 10652 branches at +8             |
+   +----------------+-----------+--------------------------------------------+
+   | Frelicdata     |    83,648 | three sub-blocks of 0xa400, 0x2c0, 0xa000  |
+   |                |           | [verified]. The first opens with a 0RGB    |
+   |                |           | shade ramp. Unread                         |
+   +----------------+-----------+--------------------------------------------+
+   | Farmdata       |    78,036 | 4-byte records with byte 0 always zero -   |
+   |                |           | 0RGB, the opposite phase to a texel.       |
+   |                |           | Unread                                     |
+   +----------------+-----------+--------------------------------------------+
+   | Cmodule1       |   822,548 | Player 6.1 module - subsystems/music.txt   |
+   +----------------+-----------+--------------------------------------------+
+   | Cmodule2       |   929,486 | Player 6.1 module                          |
+   +----------------+-----------+--------------------------------------------+
+
+   Not yet looked at: Faztecterrain, Faztectextures, Ftemplelog,
+   Fearth. Fearth is the awkward one - it uses the 4-byte texel but
+   does not resolve into an image at any width tried, and its split
+   table has not been found.
+
+   A ROUND SIZE IS NOT A FORMAT. Faztecterrain being 0xc000 exactly
+   suggests 256x192, and that suggestion is worth exactly one
+   experiment; it is not a layout. Every row above that carries
+   [verified] carries it because a size table in the executable or a
+   magic number in the bytes says so, not because the arithmetic came
+   out round.
+
+6.  Open questions
+
+   6.1  Fsprout is an octree
+
+   maybe_Sprout_LoadAndBuild (0x002d6a74) is the only thing that reads
+   it, in scene one of maybe_Space_RunPlanetScenes - see
+   effects/approach.txt section 4.3.
+
+       +0x00   'SPRT'      the magic, four bytes, not IFF
+       +0x04   3862        BRANCH count
+       +0x08   10652       LEAF count
+       +0x0c   ...         the encoded tree
+
+   A node's first byte is zero for a LEAF and otherwise a
+   CHILD-PRESENCE MASK over eight children, one child following per
+   set bit. A leaf is seven bytes in all: the zero, three colour
+   components taken >> 4, and three normal components. A branch is
+   the mask byte alone.
+
+   THE COUNTS ARE PROVED BY WALKING IT. That encoding consumes the
+   chunk exactly [verified]:
+
+       10652 * 7 + 3862 * 1 = 78,426
+       78,426 + 12          = 78,438, the chunk's size
+
+   Max depth is 6. The loader reserves hdr[8] * 0x5a + hdr[4] * 0x27
+   bytes, which is 1,109,298 - but that pairs each count with the
+   OTHER node type's size. A branch is 0x5a and a leaf 0x27, so the
+   tree needs 763,008 and the formula over-reserves by 346,290
+   [verified]. Harmless, and a trap for anyone reading the sizes off
+   it; see effects/approach.txt section 4.3.
+
+
+   o Why does the executable name Cmodule3, Cmodule4 and Fpart1data
+     when the archive has none of them, and Ftempledata from the
+     CODE_06 table likewise? Four missing names across three parts is
+     a pattern. Whether Dat_LoadChunk tolerates a miss decides whether
+     this is a packaging artefact or a sign that another relic.dat
+     exists - and it does not obviously tolerate one: the search falls
+     out of its loop and returns whatever D0 held.
+   o What loads r:p61.relic2, the file named at SEG0+0x188d3? It is
+     not a chunk in this archive, and the r: prefix means the demo
+     expects it in ram: rather than in relic.dat.
+   o Is there a magic number or version field? There is not one at the
+     start - the first longword is the count - so an archive from a
+     different build would be indistinguishable except by content.
+   o Which part loads Fearth, Farmdata, Faztecterrain,
+     Faztectextures and Ftemplelog, and what are their size tables?
+     Each one found is a chunk layout recovered for free.

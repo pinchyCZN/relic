@@ -1,0 +1,233 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                 THE CLAWS CLAMP AND THE SCREEN WHITES OUT
+
+
+Abstract
+
+   The close of the orb sequence: the claws open further than they ever
+   have, snap shut on the orb, and the screen goes white into the next
+   scene. Anim modes 0xa and 0xb, phases 8 and 9.
+
+   THESE ARE NOT A SEPARATE SHOT. All three of phases 7, 8 and 9 load
+   g_pCamPath12 and step the same cursor two a tick, so the camera
+   never cuts - the clamp and the flash are events inside the pan that
+   effects/orb_underside.txt describes, and src/part_underside.c is
+   one part covering all three. Mode 0x13's shot before it is a
+   different camera, on g_pCamPath, which is why part 2.10 stays
+   separate.
+
+   The effects are the pan's, unchanged; this note is the clamp, the
+   flash, and why that pan was cut short.
+
+Table of Contents
+
+   1. The Three Phases
+      1.1. Phase Seven's Length Is Its Cue's, Not Its Cursor's
+   2. The Clamp
+   3. The Flash
+   4. The Previous Shot Was Cut Short
+   5. Open questions
+
+1.  The Three Phases
+
+   Space_RunPart runs them back to back after phase 7's music cue
+   [verified, 0x002cc8ce onward]:
+
+       +-------+------+-----------------+--------------------------+
+       | phase | mode | ends on         | renders through          |
+       +=======+======+=================+==========================+
+       |     8 |  0xa | g_SceneFuseTicks| Scene_RenderFrame        |
+       |     9 |  0xb | its own ramp    | maybe_Scene_RenderFlash  |
+       |    10 |  0xc | g_SceneFuseTicks| 0x002cd96e               |
+       +-------+------+-----------------+--------------------------+
+
+   MODE 0xa IS MODE 0x12 WITH THE CLAWS ADDED. It loads g_pCamPath12
+   at 0x002e4830 - THE SAME PATH as the shot before - steps the same
+   g_CamCursor12 two a tick, takes the same 0x100 a tick off
+   g_FlatScroll, calls the same Camera_TrackTarget, and advances
+   g_BoltSeed, g_BoltPhase, g_OrbSpinA and g_OrbSpinB by the same
+   increments [verified, 0x002d628c]. So the pan is ONE CONTINUOUS
+   MOVEMENT across the cut, not a new shot, and the port seeds its
+   cursor where the previous one ends.
+
+   What it adds is one call: Strut_AnimateClaw with D0 = 1.
+
+   Between phases 9 and 10 the scene is rebuilt and Ham8_BuildTables
+   is handed (0x5f, 0x5f, 0x7f) [verified, 0x002cc958], a pale
+   blue-white, which is the colour the screen holds.
+
+1.1.  Phase Seven's Length Is Its Cue's, Not Its Cursor's
+
+   Neither of the first two phases seeds a fuse, so no length for
+   them is in the binary. Phase seven was taken from the camera
+   cursor instead - 0x100 at its start against 0x0ccc at the next
+   phase, two a tick, which gives 1510 - and that is 116 ticks too
+   many.
+
+   MEASURED AS A MUSICAL SPAN IT IS 1394. The phase opens on the
+   (0x19,0) poll at 0x002cc82e and closes on the (0x1e,0x34) at
+   0x002cc8bc, and our Cmodule1 takes 1394 fields between them
+   against the demo's own 1392 - its cue 6 lands on field 6966 and
+   its cue 7 on 8358 [observed]. Phase eight measures 285 on both
+   sides, which is exactly what it already held.
+
+   THE CURSOR RUNS ON INTO PHASE EIGHT, which is why its range
+   overstates the phase: it is not reset at the handover, so the
+   0x0ccc read at the next phase's start is 1510 steps from this
+   phase's start and not 1510 steps of THIS phase. At 1510 the pan
+   was still running when the cue cut it, and the clamp and the
+   flash were squeezed into what was left - reconstruction.txt 4.5
+   for why a span has to be measured against the music and not
+   against a counter's range.
+
+
+2.  The Clamp
+
+   Strut_AnimateClaw [verified, 0x002d643c] runs in two stages against
+   the three joint angles g_ClawJoint0, 1 and 2 at 0x002e0ba6, 0x0baa
+   and 0x0bae, with a latch at g_ClawOpening and three velocities at
+   g_ClawVel0, 1 and 2.
+
+   STAGE ONE, OPENING, while the latch is clear and joint 0 is above
+   -0x1ee:
+
+       joint 0 -= 2      joint 1 -= 4      joint 2 -= 2
+
+   so joint 1 travels at twice the rate of the other two. THE JOINTS
+   START THIS PHASE AT ZERO: hardware reads (-336, -672, -336),
+   joint 1 exactly twice the others, which is 168 ticks of those rates
+   from (0, 0, 0) [observed]. Joint 0 reaches the limit at tick 247.
+
+   THE LATCH, and D0 is what licenses it: mode 0xa passes 1, and a
+   caller passing zero would open the claws and never snap them.
+   Space_RunPart clears the latch as phase 8 begins [verified,
+   0x002cc8d6], so the sequence is armed once per run.
+
+   STAGE TWO, THE SNAP, until joint 0 reaches 0x200:
+
+       joint += velocity        velocity += 2
+
+   per joint, independently, with every velocity starting at zero.
+   THAT IS CONSTANT ACCELERATION AND NOT A RAMP - the increments go
+   2, 4, 6, 8 - which is what makes it read as a snap rather than a
+   close. Joint 0 covers the 1006 units from -0x1ee to 0x200 in about
+   31 ticks; the port measures 247 to 279 [observed].
+
+   THE SHUT TEST IS ON JOINT 0 ALONE, so the others stop wherever they
+   are when it passes. All three travel the same 1056 units, so joint
+   1 - which opened twice as far - ends at 68 rather than closed, and
+   the final pose is (562, 68, 562). Past the limit the routine returns
+   without touching anything and the pose holds.
+
+   PHASE 8 ENDS ON A MUSIC CUE, NOT ON THE FUSE, and reading the fuse
+   as its length is the trap here. Its loop polls 0x0021ff64 and tests
+   0x00237232; the fuse's own flag is 0x00237230 and the loop never
+   looks at it [verified, 0x002cc900], so mode 0xa's countdown of
+   g_SceneFuseTicks raises a flag nobody reads. Phase 6 seeds that fuse
+   0x2b8e and phases 6 and 7 consume 1529 of it, leaving 9621 at phase
+   8's start [observed] - over three minutes, which is what the phase
+   would run for if the cue never arrived.
+
+   MEASURED LENGTH: stepping the mode word on hardware from 187 ticks
+   in, it still reads 0xa at 282 and 0xb at 287, so the cut
+   lands between [observed]. src/part_underside.c carries 285. THE SNAP
+   FINISHES AT ABOUT 280, so the flash follows within a few ticks - the
+   clamp and the whiteout are one beat, not two separated by a long
+   hold on a shut claw.
+
+   VERIFIED TICK FOR TICK against hardware:
+
+       +-----------------+--------------------+--------------------+
+       | phase 8 tick    | demo               | port               |
+       +=================+====================+====================+
+       |             187 | -374, -748, -374   | -374, -748, -374   |
+       |             207 | -414, -828, -414   | -414, -828, -414   |
+       |             247 | -494, -988, -494   | -494, -988, -494   |
+       |             257 | -404, -898, -404   | -404, -898, -404   |
+       +-----------------+--------------------+--------------------+
+
+   THE FIRST STEP IS ON TICK 1, NOT TICK 0. The phase resets all six
+   claw variables [verified, 0x002cca5a] and its loop renders before it
+   ticks, so the opening reaches -0x1ee on tick 247 and the latch is
+   248. Stepping on tick 0 instead puts the whole clamp one tick early,
+   and the error only shows in the snap: the demo gains 90 over the ten
+   ticks after -0x1ee, velocities 0 to 18, where a tick-0 start gains
+   110 [observed]. The joint values alone cannot tell the two apart at
+   the moment of the latch - only the slope afterwards can.
+
+3.  The Flash
+
+   Mode 0xb does nothing but ramp one counter [verified, 0x002d6300]:
+
+       g_WhiteoutLevel += 0x14, and the phase ends at 0x8c
+
+   which is SEVEN TICKS. No camera, no clocks, no claw. Mode 0xc then
+   carries the same counter on at 1 a tick while the next scene's own
+   fuse runs.
+
+   AND THE FLASH IS ONE GIANT GLOW BLOB. Scene_RenderFlash is
+   Scene_RenderFrame with a single call appended - instruction for
+   instruction the same nine latch copies, sky, object sort, mode 5
+   tail and horizon band, then bsr Flash_DrawWhiteout before the rts
+   [verified, 0x002cd8fe against 0x002cd892]. That one call is the
+   whole difference, and it is:
+
+       Draw_GlowBlob(radius = min(g_WhiteoutLevel, 0x64),
+                     x = 0x46, y = 0x37, ramp = g_RampBolt)
+
+   [verified, 0x002d1f26]. Centre (70, 55) of a 160 x 100 frame, just
+   right of and above the middle. The ramp is g_RampBolt, the SAME one
+   the bolt nodes and the orb's satellites use, so the flash is not a
+   special effect at all - it is the scene's own glow primitive asked
+   for a radius nothing else ever wants.
+
+   SO THE SCENE IS STILL DRAWN UNDERNEATH. Phase 9 is not a cut to
+   white: the ship, the claws and the sky keep rendering while the blob
+   grows to swamp them. A reconstruction that replaces the frame with a
+   wash gets the last two ticks about right and everything before them
+   wrong.
+
+   AND IT WRITES ONLY BYTE +2. Draw_GlowBlob adds into the LIGHT
+   channel through g_LightSatLut, so the screen does not go white by
+   having white drawn into it: a saturated LIGHT resolves toward the
+   scene's light base, and during this phase that base is STILL THE
+   ORB'S (0x3f, 0x4f, 0x6f), which is why the flash reads blue-white.
+   The (0x5f, 0x5f, 0x7f) handed to Ham8_BuildTables at Space_RunPart
+   +0x3c8 arrives only after the phase ends, so part 2.12 never sets
+   it.
+
+   MODE 0xc CARRIES THE SAME COUNTER INTO THE NEXT SCENE, where it
+   drives a contracting blob at a different centre - see
+   effects/explosion.txt 2. The white peak is therefore at the cut
+   between the two phases and inside neither.
+
+   THE RADIUS CLAMP IS WHY THE LAST TICKS DO NOTHING. The level ramps
+   to 0x8c but the blob takes min(level, 0x64), so the radius saturates
+   on tick 5 of the seven. The port's mean luminance over the flash
+   runs 155, 173, 372, 656, 654 at ticks 758, 759, 761, 763 and 765
+   [observed] - flat across the last two, as the clamp requires.
+
+4.  The Previous Shot Was Cut Short
+
+   PHASE 8 OPENS AT CURSOR 0x0ccc, measured on hardware less the 168
+   ticks the reading sat past it [observed]. Phase 7 opens at 0x100
+   and the cursor steps
+   two a tick, so phase 7 RUNS (0xccc - 0x100) / 2 = 1510 TICKS.
+
+   src/part_underside.c carried 1382, which came from stepping the mode
+   word on from a single reading - that measures how far THAT READING
+   sat from the cut, not how long the shot is, and the two agree only
+   when the reading is the shot's first tick. The port carries 1510.
+
+   The scroll agrees to within eight ticks: 0x3f00 at phase 7's start
+   less 0x100 a tick over 1510 ticks is 0x5900, against the 0x6100
+   measured at phase 8's start [observed].
+
+5.  Open questions
+
+   -  WHAT 0x002e0c54, 0x002e0c58 AND 0x002e0a92's phase 10 seed drive,
+      and the table at 0x002ccc24 that 0x002ccb66 walks during the
+      phase 9 to 10 rebuild.
+

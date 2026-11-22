@@ -1,0 +1,303 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                   THE DUNES, ACT 2's FOURTH SHOT
+
+
+Abstract
+
+   maybe_DunesModule_Run at 0x00313f6c. NOT THE SAND SCENE THE ORB
+   LANDS IN - that is Sand_RunScene at 0x003132a4, act 2's FIRST
+   call, and it is effects/sand.txt. This one is act 2's fourth,
+   after a further space section, and nothing has been observed
+   running in it.
+
+   IT IS NOT VOXELS AND IT IS NOT GEOMETRY. The sand is a painted
+   picture plus a HEIGHT MAP, and a rising level erases it a layer at
+   a time; the grains that blow away are a particle list seeded at
+   the edge the level is crossing. Everything is per-pixel over the
+   same 160 x 100 frame the rest of the demo uses.
+
+Table of Contents
+
+   1. The Module
+   2. The Four Surfaces
+   3. Where They Come From
+   4. The Erosion
+   5. The Spawn
+   6. The Haze Is The Explosion's Ring
+   7. The Grains
+   8. The Six Phases
+   9. Open questions
+
+1.  The Module
+
+   Demo_RunAct2 calls it between the two SpaceModule_Run passes
+   [verified, 0x0021f894], so it follows the orb's fall to Earth and
+   precedes the rest of act 2.
+
+   SandModule_Run is three calls: a setup, Sand_RunScene, and a
+   teardown [verified, 0x00313f6c]. Sand_RunScene is a linear script
+   of six render-and-tick loops, the first ending on a music cue and
+   the rest on counters, in the same shape as Space_RunPart's.
+
+   ITS LIGHT BASE IS (0x7f, 0x5f, 0x4f) [verified, 0x0031432a] - warm,
+   where every space scene is blue.
+
+2.  The Four Surfaces
+
+   All four are indexed by the same pixel and all four are prepared
+   before the loops run:
+
+    +-------------------+----------------+------------------------------+
+    | g_pSandBase       | 4 bytes/pixel  | the picture UNDER the sand   |
+    | g_pSandHeight     | 1 byte/pixel   | the height map               |
+    | g_pSandOffset     | 4 bytes/pixel  | added to the colour address  |
+    | g_pSandMask       | 1 BIT/pixel    | which pixels may spawn       |
+    +-------------------+----------------+------------------------------+
+
+   g_pSandMask is 20 bytes a row, which is 160 bits, and
+   Sand_DrawErosion reads it a longword at a time across five blocks
+   of 32 columns - that blocking is why the row loop is 5 x 32 rather
+   than one run of 160.
+
+3.  Where They Come From
+
+   ALL OF IT IS LINKED INTO THE EXECUTABLE; none of it is in
+   relic.dat. The module's data runs from 0x00316748 to past
+   0x00339e60 [verified]:
+
+    +--------------+---------+-----------------------------------------+
+    | image addr   |   bytes | what                                    |
+    +==============+=========+=========================================+
+    | 0x00316748   |   48076 | FORM DEEP - the base picture            |
+    | 0x00322314   |   16000 | a height map, one byte a pixel          |
+    | 0x00326194   |   48076 | a second FORM DEEP                      |
+    | 0x00331d60   |   17024 | 256 longword palette, then 16000 indices|
+    | 0x00335fe0   |   16000 | a second height map                     |
+    | 0x00339e60   |         | the spawn mask                          |
+    +--------------+---------+-----------------------------------------+
+
+   THE PICTURES ARE IFF FORM DEEP, the Amiga 24-bit format - DGBL,
+   DPEL, DLOC and a DBOD of exactly 48000 bytes, which is 16000
+   three-byte pixels. Sand_LoadDeepImage scans for the 'DBOD' tag a
+   BYTE at a time, skips eight, and then converts each pixel in place
+   [verified, 0x0031426a]:
+
+       pixel = (r << 24) | (g << 16) | b        ; LIGHT left at zero
+       pixel = (pixel & 0xfcfcfcfc) >> 2        ; 8-bit down to 6
+
+   so the demo's four-byte pixel falls straight out of a 24-bit
+   image, and the LIGHT byte is zero because the format has no fourth
+   channel - which is what leaves it free for the glows.
+
+   SAND_EXPANDINDEXED DOES THE SAME FOR A PALETTE IMAGE [verified,
+   0x0031429a]: A0 points at a palette of D0 longwords followed by D7
+   index bytes, and each index is looked up and converted with the
+   identical mask and shift.
+
+   AND THE RUN-TIME BUFFERS ARE TALLER THAN THE SCREEN. The four
+   sizes at g_SandBufferSizes are 25504, 24992, 3060 and 24480: 24480
+   is 160 x 153, the two larger figures are that plus a 256 or 128
+   entry palette, and 3060 is 20 bytes a row for 153 rows. So the
+   later phases scroll through a surface half again as tall as the
+   frame, which is what g_SandScroll indexes.
+
+4.  The Erosion
+
+   SAND_DRAWEROSION IS THE WHOLE EFFECT [verified, 0x00315c34]:
+
+       level = g_SandLevel >> 2
+
+       h = g_pSandHeight[i] - level
+       if h < 0:  pixel = g_pSandBase[i]
+       else:      pixel = *(g_pSandHeightColour[h] + g_pSandOffset[i])
+
+   SO THE LEVEL IS A WATERLINE AND THE SAND IS WHAT STANDS ABOVE IT.
+   Raising it uncovers the picture beneath from the lowest ground up,
+   which is what reads as the sand being stripped away rather than
+   faded.
+
+   THE COLOUR COMES FROM THE HEIGHT, NOT THE PIXEL. Each surviving
+   pixel takes its colour from g_pSandHeightColour indexed by its
+   remaining height, offset by its own g_pSandOffset entry - so the
+   dune shades by depth and the offset gives the grain its texture.
+
+   g_SandScroll shifts all four surfaces together: its top byte picks
+   a row, times 0xa0 for the height map, times 4 for the base and the
+   offsets, times 0x14 for the mask.
+
+5.  The Spawn
+
+   A PIXEL SPAWNS A GRAIN ONLY AT THE MOVING EDGE. Three tests, all
+   of which must pass [verified, 0x00315cc4 onward]:
+
+       h - 0x12 >= 0                    ; not already bare
+       h - 0x12 < (level - last level)  ; inside the band crossed THIS
+                                        ; frame
+       the pixel's mask bit is set
+       and g_SandGrainCount < 0x3a98    ; 15000 live at most
+
+   The node comes off g_pSandGrainFree and is stamped with the
+   PIXEL'S OWN COLOUR, its x and y, a velocity pair read in sequence
+   from 0x0033b0ba and a life from the table at 0x0033b0d2, then
+   linked into g_pSandGrainLive.
+
+   SO THE GRAINS ARE THE SAND THEY CAME FROM: same colour, starting
+   exactly where it vanished, which is what makes the two halves of
+   the effect read as one. The mask is what keeps it sparse - without
+   it every uncovered pixel would spawn and the dissolve would be a
+   solid sheet rather than a scatter.
+
+6.  The Haze Is The Explosion's Ring
+
+   SAND_DRAWHAZE IS 0x002d2444 WITH ONE TEST ADDED [verified,
+   0x00315e20]. Instruction for instruction it is the ring the
+   explosion draws: the same two loops mirrored from the framebuffer
+   plus 0x7a80 - row 49 - and row 50, the same texture biased by
+   0x20200, the same two taps a phase apart added into byte +2 only,
+   the same ror'd column step with addx folding its carry. D1 is the
+   size, floored at 0x14.
+
+   THE ONE DIFFERENCE IS A HEIGHT TEST:
+
+       h = g_pSandHeight[scrolled row][x]
+       if h < (g_SandLevel >> 2): skip this pixel
+
+   so the dust only lies where sand still stands, and it retreats as
+   the level rises. That single comparison is the whole distance
+   between a blast ring and blowing dust - effects/explosion.txt 3
+   has the shared arithmetic.
+
+   The phase is 0x00315f66: 0x15e through most of the scene, 0x5a in
+   the fourth [verified].
+
+7.  The Grains
+
+   SAND_DRAWGRAINS WALKS THE LIVE LIST and culls what has left the
+   frame [verified, 0x0031589e]. It is doubly linked through +0x00
+   and +0x04, head at g_pSandGrainLive, free pool at
+   g_pSandGrainFree:
+
+       +0x00  next           +0x04  prev
+       +0x08  x, 16.16       +0x0c  y, 16.16
+       +0x16  LIFE, word     +0x18  vx, 16.16   +0x1c  vy, 16.16
+       +0x20  the colour it was stamped with
+
+       x = node[0x08] >> 8
+       y = (node[0x0c] - g_SandScroll) >> 8
+       cull if x < 0, x >= 0x9f, y < 0 or y >= 0x62
+
+   THE SHAPE COMES OFF THE LIFE, which is what makes +0x16 a counter
+   and not a style. node[0x16] >> 1 indexes the jump table at
+   0x003159ce, whose entries are eight small draws between 0x00315904
+   and 0x00315964 writing one to four pixels of the grain's own
+   colour. The table is a SCATTER, not a ramp - 1 px at life 2, 2 px
+   at 4, 1 px at 8, 4 px at 32 - so a grain changes shape as it ages
+   and a cloud of them shimmers instead of sitting as uniform dots.
+
+   THE STEP IS THE SHARED TAIL every shape falls into [verified,
+   0x00315968]:
+
+       x += vx ;  vx -= vx >> 3        ; 7/8 a frame - DRAG
+       y += vy ;  vy unchanged         ; no gravity, no drag
+       life -= 1 ; cull when it passes zero
+
+   SO THE SIDEWAYS THROW DECAYS AND THE FALL DOES NOT. A grain
+   leaves the surface with both, loses its horizontal push over about
+   eight frames, and then drops straight - which is what makes the
+   cloud lean away from the edge and then rain down. There is no
+   gravity term at all: vy is whatever it was seeded with.
+
+   CULLING IS A LIST MOVE, NOT A FLAG. The node is unlinked, pushed
+   onto the free pool and g_SandGrainCount drops - so the spawn test
+   in section 4 can hand the same node straight back out.
+
+8.  The Six Phases
+
+   Sand_RunScene is a linear script, each phase a render-and-tick
+   loop [verified, 0x00314304]:
+
+    +----+-------------------------+----------------------------------+
+    | ph | ends on                 | what it draws                    |
+    +====+=========================+==================================+
+    |  1 | a music cue             | Sand_BlitBase, 0x00314882,       |
+    |    |                         | Sand_DrawSprites                 |
+    |  2 | 0x0033b078 >= 0x1400    | the same, plus a growing glow    |
+    |  3 | 0x00237218 >= 0x122     | 0x00315b5a, 0x00315524, grains   |
+    |  4 | 0x00237218 >= 0xe6      | Sand_DrawErosion, 0x0031589e     |
+    |  5 | 0x00237218 >= 0x96      | Sand_DrawErosion, both passes    |
+    |  6 | a music cue             | Sand_DrawErosion                 |
+    +----+-------------------------+----------------------------------+
+
+   0x00237218 IS A FRAME COUNTER the loops clear and poll, so phases
+   3, 4 and 5 are 290, 230 and 150 frames. Phases 1 and 6 end on cues
+   and have no length of their own.
+
+   THE FIRST TWO PHASES DO NOT ERODE ANYTHING. They blit the base
+   picture whole and draw over it; Sand_DrawErosion does not appear
+   until phase 4. So the sand only starts coming apart a third of the
+   way in.
+
+   PHASE 2 IS THE ORB ARRIVING. Its loop projects three values into
+   a glow each frame [verified, 0x00314454]:
+
+       x = (0x0033b070 >> 8) + 0x50
+       y = (0x0033b074 >> 8) + 0x41
+       r = (0x0033b078 >> 8) + 0xa, capped at 0x7f
+
+   and the phase ends when 0x0033b078 passes 0x1400 - so the exit
+   condition IS the glow reaching its size, not a timer.
+
+   PHASES 4, 5 AND 6 EACH RE-POINT THE FOUR SURFACES before they
+   start, which is what makes them different shots rather than one
+   continuous erosion:
+
+       ph 4   base and offset from the two expanded buffers,
+              height and mask from the run-time pair
+       ph 5   base from the SECOND FORM DEEP at 0x00326194, offset
+              from the indexed image at 0x00331d60, height
+              0x00335fe0, mask 0x00339e60 - all four literals
+       ph 6   back to the expanded buffers, after a flat fill
+
+   AND EACH SETS ITS OWN LEVEL TARGET: 0x3d0, 0x320, 0x2a0 and 0x300
+   for phases 3 to 6. g_SandLevel is copied from g_SandLevelTarget at
+   the top of every loop, so the target is where the erosion runs to.
+
+   PHASE 6 OPENS ON A FLAT FILL of 0x3f3f003f over the whole frame,
+   presented three times before anything else is drawn [verified,
+   0x00314736] - a white flash, and the only one in the module.
+
+   THE MODULE HAS ITS OWN FRAMEBUFFER POINTER, 0x0033b0ae, not the
+   space code's g_pFrameBuffer at 0x002f101c [verified, every draw in
+   it]. A capture tool pointed at the space pointer shows something
+   else entirely while this module is running, which is the first
+   thing to check when a sand frame comes back looking wrong.
+
+   0x0033b050 CARRIES 1, 3, 4 AND 3 across phases 3 to 6. It is set
+   before each loop and read nowhere in this routine, so it is a mode
+   the grain code picks up.
+
+9.  Open questions
+
+   -  THE PHASE TABLE IS NOT CONFIRMED AGAINST HARDWARE. Section 8 is
+      read out of the code alone.
+
+      THE MODULE IS LIVE WHEN 0x0033b0ae IS NON-ZERO - it holds the
+      module's own framebuffer and nothing else writes it, so it is
+      the cheapest test for whether a state is inside this scene.
+      g_SandLevel, g_SandLevelTarget and 0x0033b050 are all zero
+      until Sand_RunScene's setup runs.
+
+      The address arithmetic is not the obstacle: both FORM DEEP
+      blobs sit exactly where the CODE_03 offset predicts [observed],
+      so a zero there means the module has not started.
+
+   -  SAND_DRAWSPRITES draws eight somethings at fixed screen points
+      clustered near (0x5a, 0x46), each with its own phase, and it
+      SELF-MODIFIES four constants inside its own callee each frame
+      [verified, 0x003149b8]. Not identified.
+
+   -  0x00315f6a, which every loop ends on, and the phase-1 and
+      phase-2 draws at 0x00314882, 0x00314c0c, 0x00314a9e and
+      0x00314acc.

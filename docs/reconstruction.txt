@@ -1,0 +1,1512 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                    THE RECONSTRUCTION, AND ITS RULES
+
+
+Abstract
+
+   What src/ is for, how it is built, and the one judgement that
+   separates this from an emulator.
+
+   RELIC IS NOT BEING EMULATED. An emulator already reproduces it
+   exactly, pixel for pixel, and there is no reason to write another
+   one. This is a REIMAGINING: the demo's own code and its own data,
+   run at a resolution and precision its authors could not reach, to
+   answer what RELIC would have looked like on an Amiga whose chunky
+   graphics were fast and high resolution.
+
+   That licence is narrow and section 2 draws its edge.
+
+Table of Contents
+
+   1. The shape of the program
+   2. What may be enhanced, and what may not
+   3. One frame at a time, because of the browser
+      3.1. Fast forward skips the drawing, not the state
+      3.2. The frame's width is rounded up to a multiple of four
+      3.3. The pointer arrives as a gesture, not as a camera
+      3.4. Anything that accumulates belongs to step()
+      3.5. A page's handles on the audio, and why it polls
+   4. The timeline runs on the music
+      4.1. ibxm sits behind the same four calls
+      4.2. One tune an act, and a third one for the typing
+      4.3. P61's speed word, and what the depacker does with F
+      4.4. The tunes are parsed once, and the queue is latency
+      4.5. Holds and waits, and how a span is measured
+      4.6. Seeking the replayer, and what a jump is worth
+   5. Subpixel placement, and the DIVERGENCE marker
+   6. Building it
+   7. A part of our own, past the end
+      7.1. Two things to look at, and the cycle that picks between
+           them
+      7.2. The ark's body, and measuring something with no bounds
+           call
+      7.3. The city's two burns, which are not objects at all
+      7.4. The temple takes the look too, because it is a raycaster
+      7.5. Flying the temple's ground, with a camera it never had
+   8. Open questions
+
+1.  The shape of the program
+
+   THE CORE KNOWS NOTHING ABOUT A HOST. Everything under src/
+   except main_*.c renders into a Relic_Frame and stops. A host
+   picks that up and puts it somewhere.
+
+   +------------------+--------------------------------------------+
+   | File             | What it is                                 |
+   +==================+============================================+
+   | relic.h          | types, the 4-byte pixel, Relic_Frame       |
+   +------------------+--------------------------------------------+
+   | image.h/.c       | the executable, addressed by IMAGE ADDRESS |
+   +------------------+--------------------------------------------+
+   | gfx.h/.c         | the shared primitives - section 1.1        |
+   +------------------+--------------------------------------------+
+   | host.h           | the boundary, and the music clock          |
+   +------------------+--------------------------------------------+
+   | demo.c           | the frame-at-a-time object                 |
+   +------------------+--------------------------------------------+
+   | parts.h/.c       | the part registry                          |
+   +------------------+--------------------------------------------+
+   | space.h/.c       | the space backdrop - section 1.2           |
+   +------------------+--------------------------------------------+
+   | sprout.h/.c      | the light's octree and its shading         |
+   +------------------+--------------------------------------------+
+   | part_*.c         | one file per part                          |
+   +------------------+--------------------------------------------+
+   | main_sdl.c       | host: a window                             |
+   +------------------+--------------------------------------------+
+   | main_ppm.c       | host: PPM files, links only the CRT        |
+   +------------------+--------------------------------------------+
+   | agent.h/.c       | the debug agent - subsystems/agent_mcp.txt |
+   +------------------+--------------------------------------------+
+
+   THE DEMO READS THE ORIGINAL FILES. image.c carries the segment
+   map from formats/hunk.txt and resolves an image address, so a
+   plate comment that names g_TerminalFrames at 0x00349e60 is
+   fetched here by that same address. There is no intermediate asset
+   format to keep in sync, and no converter of ours for a wrong
+   reading to hide behind.
+
+   1.1  Why there is a gfx.c at all
+
+   A handful of routines and tables carry the demo's entire visual
+   language. Distinct functions touching each, out of the database:
+
+       g_SinTable       40      the sprite blitter   17
+       g_PolarTable     24      g_BlobFalloff        15
+       the RNG          19      Draw_GlowBlob        10
+       Vbl_SetHook      18      Math_Isqrt           10
+       g_LightSatLut    10      Ham8_BuildTables      9
+
+   A program of some 940 functions runs everything it draws through
+   about a dozen pieces. So ANYTHING A SECOND PART NEEDS MOVES INTO
+   gfx.c rather than being written twice.
+
+   1.2  The space backdrop
+
+   SEVERAL SCENES SHARE ONE BACKDROP AND THE DEMO SHARES THE CODE FOR
+   IT. Scene_DrawTexturedSky, Scene_ProjectAndDrawSun, the
+   Sprite_StampSaveUnder and Sprite_RestoreSaveUnder pair,
+   Scene_DrawPlanetAndHalo, Flare_Draw and
+   maybe_Scene_DrawHorizonBand are called by the sun scene, by both
+   scenes of maybe_Space_RunPlanetScenes and by Space_RunPart, with
+   different parameters each time - effects/approach.txt section 7.
+   So space.c holds them and the part files hold the scenes.
+
+   THE STEP ORDER IS NOT IN space.c. The demo has four frame routines
+   that are permutations of the same steps - one substitutes the
+   portal glow where another has the shadow sweep, one leaves the sun
+   out entirely - so each gets its own C function in its own part
+   file, per rule 17, and space.c exports only the steps.
+
+   What a scene owns rather than shares: the base colour it passes
+   Ham8_BuildTables, the sun and planet world positions, the camera
+   angle and its rate, and any step with no counterpart elsewhere.
+
+2.  What may be enhanced, and what may not
+
+   The effects are RESOLUTION-PARAMETRIC: a frame carries its own
+   size and a 16.16 scale against the demo's units, and every effect
+   decides for itself what that scale means to its own terms. That
+   is a judgement per effect and it is wanted - it is the whole
+   point of the exercise.
+
+   THE LINE: ENHANCE THE SAMPLING OF THE DEMO'S OWN DATA; NEVER
+   SUBSTITUTE DATA OF OUR OWN.
+
+   +-----------------------------------+--------------------------+
+   | Allowed                           | Banned                   |
+   +===================================+==========================+
+   | interpolating between entries of  | inventing a palette, a   |
+   | one of the demo's tables instead  | ramp or a colour that is |
+   | of nearest-sampling it            | not located              |
+   +-----------------------------------+--------------------------+
+   | scaling a geometry constant with  | tuning a constant until  |
+   | the resolution                    | it matches a screenshot  |
+   +-----------------------------------+--------------------------+
+   | carrying a value at higher        | changing a value because |
+   | precision than 6 or 8 bits        | the original looks wrong |
+   +-----------------------------------+--------------------------+
+   | smoothing a gradient the demo     | adding an effect the     |
+   | quantised                         | demo does not have       |
+   +-----------------------------------+--------------------------+
+
+   This does not loosen CLAUDE.md rule 12. Rule 12 bans inventing
+   data, and it still does. What changes is that a HIGHER-PRECISION
+   READING of located data is not an invention.
+
+   SCALE 1.0 STAYS EXACT AND IS THE REFERENCE. A part whose output
+   at scale 1.0 has drifted is broken, whatever it looks like zoomed
+   in. tools/ctest.py enforces that by rendering through the PPM
+   host and diffing against the verified Python in sim/, byte for
+   byte.
+
+   So every enhancement has to be expressible as a parameter that
+   can be turned off, not baked into the arithmetic.
+
+   THE TEMPLE'S TILES ARE SAMPLED BELOW THEIR OWN RESOLUTION, and
+   that is a candidate for enhancement once the scenes are done. The
+   forty tiles in Faztectextures are 64 by 64 apiece - see
+   formats/relic_dat.txt - and the ruins draw them visibly blockier
+   than that, so at least one axis is being decimated on the way to
+   the screen. Sampling the tile at its own resolution is squarely
+   inside section 2's rule: it resamples the demo's own data more
+   finely and invents nothing. It is NOT to be done before the
+   scenes are transcribed, because the decimation is the demo's
+   behaviour and scale 1.0 has to keep reproducing it.
+
+   2.1  Where the judgements already are
+
+   The lightning showed the shape of the problem before any of this
+   was written down. Beam_BuildBoltPath scales its jitter and its
+   node radius by the bolt's own pixel length, so both follow the
+   resolution for free. Draw_LineAA's three-pixel width and the
+   radius floor of 4 do not - they are absolute. At 1x they are a
+   large fraction of the frame and the bolt reads as a rope; at 8x
+   they are hairlines and it reads as beads on a thread.
+
+   Three pixels is three DEMO pixels, so the width follows the
+   scale. Every effect carries one or two calls of that kind and
+   each is written down where it is made.
+
+   2.2  The table trap
+
+   SCALE THE PIXEL GEOMETRY, NEVER THE TABLE DOMAINS. g_BlobFalloff
+   is indexed [radius << 8 | dist] with the radius masked to 0x7f,
+   so a radius-30 blob at 8x would run off the end of it at 240.
+   Divide the pixel offset by the scale BEFORE the lookup instead:
+   that resamples the demo's own table and keeps every index inside
+   the range the demo uses.
+
+3.  One frame at a time, because of the browser
+
+   THE WHOLE DEMO IS ONE FUNCTION THAT RENDERS ONE FRAME AND
+   RETURNS. Nothing under src/ outside main_*.c may loop waiting for
+   anything, block, sleep or read input.
+
+       native   while (running) tick();
+       web      emscripten_set_main_loop(tick, 0, 1);
+
+   A browser owns its own event loop. A `while (1)` inside the demo
+   never gives control back and the page hangs; Asyncify can rewrite
+   around that, at a cost in size and speed, but designing for it is
+   free and retrofitting is not.
+
+   THE ORIGINAL IS FULL OF BLOCKING WAITS, which is the work this
+   implies. Space_RunPart is a sequence of `render ; present ; test
+   a flag ; branch back`, and SpaceModule_Part0 blocks on g_IntroDone
+   until the opening text has finished typing. Every one of those
+   becomes a state machine that advances by one step per frame.
+
+   A FRAME IS A PAL VERTICAL BLANK, AND THE HOST'S REFRESH IS NOT
+   ONE. Vbl_Server (0x0021f9b0) is the VERTB handler every timed
+   thing in RELIC counts, so a tick is 1/50 s and nothing else
+   [verified]. Hosts therefore do not call Demo_Frame; they call
+   Demo_Advance with the milliseconds that have passed, and it steps
+   the state zero or more times - zero on a 60 Hz display one frame
+   in six - then draws exactly one picture.
+
+   STEPPING AND DRAWING ARE SEPARATE CALLS. A part that carries
+   per-tick state says so by setting Relic_Part.step, which advances
+   that state and draws nothing. Catching up by calling frame() per
+   tick instead is the obvious reading and it feeds back: once a
+   frame costs more than the 20 ms it stands for, one call draws two
+   or three pictures, which makes the next delta larger still, and
+   the demo settles at whatever rate it can draw rather than at 50
+   Hz. The sun scene ran at a quarter speed that way. Split, its
+   tick rate holds at 50.0 from 1000 presented frames a second down
+   to 13.
+
+   CALLING Demo_Frame ONCE PER PRESENTED FRAME LOOKS RIGHT AND RUNS
+   THE DEMO AT THE HOST'S RATE. An unsynced SDL loop manages a few
+   hundred frames a second, so the intro's cursor blinked at about
+   twice its real 3.1 Hz - fast enough to see, but only against the
+   original. Worse, the rate then varies by machine, so a part's
+   timing stops being reproducible. Catching up after a stall is
+   capped for the same reason: a dragged window must not
+   fast-forward the demo to make the time back.
+
+   AUDIO IS NOT RENDERED INSIDE THE FRAME CALL. SDL pulls audio
+   through its own callback - a separate thread natively, Web Audio
+   under emscripten - so it is a second entry point, not something
+   the frame function does. The frame function must not assume it
+   knows how much audio has been consumed; it asks the clock in
+   section 4.
+
+3.1.  Fast forward skips the drawing, not the state
+
+   THE OBVIOUS LOOP IS THE SLOW ONE. Calling Demo_Frame twenty times
+   a pass gives twenty renders, and every part here is a per-pixel
+   loop - on the temple or the city at any real window size that
+   costs more than running at speed, so the fast forward comes out
+   slower than the demo. Demo_Skip steps instead: the state advances
+   N times and the picture is drawn at the end.
+
+   THE TAIL OF THE RUN IS STILL DRAWN, AND THAT IS NOT A NICETY.
+   The temporal filters - Temple_BlurFrame, Space_BlurFrame and the
+   stills module's - keep their history in frame(), not in step(),
+   and each averages against the frame before it. Landing on one
+   drawn frame leaves that history empty and the picture arrives at
+   half its light, which is the same trap as scoring a one-frame
+   render. Measured on the ark against hardware, drawing the last N
+   of a run [observed]:
+
+       +----+-------+-------+-------+-------+
+       |  N |     R |     G | LIGHT |     B |
+       +====+=======+=======+=======+=======+
+       |  1 | 16.53 | 14.50 | 14.70 | 12.89 |
+       |  4 |  2.80 |  2.48 |  2.20 |  2.26 |
+       |  8 |  1.99 |  1.70 |  1.38 |  1.45 |
+       | 16 |  2.01 |  1.70 |  1.37 |  1.44 |
+       | 40 |  2.01 |  1.70 |  1.38 |  1.44 |
+       +----+-------+-------+-------+-------+
+
+   Eight is converged - 16 and 40 differ from it only in the
+   rounding - so SKIP_DRAW is 8.
+
+   A PART WITH NO step() CANNOT SKIP AT ALL, because its frame() IS
+   its state. Four are built that way - the three logos and the
+   terminal - and they tick through Demo_Frame like everything else,
+   which is affordable only because they are the cheap ones.
+
+   THE HANDOVER ENDS THE PASS, as it does in Demo_Advance: the next
+   part starts from its own tick 0, so the count still in hand is
+   not its to spend. At part 2.12b's 792 the pass steps the twelve
+   ticks that are left, hands over, and draws the remaining eight
+   into the new part [observed].
+
+3.2.  The frame's width is rounded up to a multiple of four
+
+   TWO THINGS STACK HERE AND EITHER ALONE IS HARMLESS.
+
+   FX_DIV TRUNCATES, so the scale that fits a 1280 x 720 window is
+   471859 and not 7.2 - near enough to the eye, but 160 times it is
+   1151 rather than 1152. The frame comes out a pixel short in both
+   axes and the host stretches it over the window to make the
+   difference up.
+
+   AND THREE BYTES A PIXEL TIMES AN ODD WIDTH IS AN ODD PITCH. A
+   host handing a frame to a texture passes the row length as a
+   pitch, and 1151 x 3 is 3453 - not a multiple of four, which is an
+   alignment no driver is obliged to take. What it reads as the next
+   row then starts a few bytes early, and the picture skews by a
+   little more on every row.
+
+   The two coincide: the windows where the truncation bites are
+   exactly the ones that land on an odd width. 16:9 does it - 1280 x
+   720, 1920 x 1080 and 1024 x 640 all give a width ending in 1 or 7
+   - and 16:10 does not, so 1280 x 800, 800 x 500 and 640 x 400 come
+   out clean. THAT IS WHY RESIZING MOVED IT rather than curing it,
+   and why the demo's own default window was in the bad case.
+
+   Rounding the width up costs one column of scene at the right and
+   makes every pitch four-aligned. The height is left alone: nothing
+   indexes a frame by column.
+
+3.3.  The pointer arrives as a gesture, not as a camera
+
+   A HOST REPORTS WHAT THE USER DID; A PART DECIDES WHAT IT MEANS.
+   src/host.h carries five things and interprets none of them: the
+   pointer's button together with how far it has moved since that
+   button went down, as a 16.16 fraction of the window's half width
+   and half height; a running count of wheel notches; a running count
+   of "next"; the keys a host is holding, under generic names; and a
+   one-frame request for rest.
+
+   THE KEYBOARD'S TWO CHANNELS ARE SHAPED LIKE THE POINTER'S. A count
+   of "next" is the wheel's form - limited nowhere, because how many
+   things there are to cycle through is a part's business - and the
+   held set is the drag button's, a state the host maintains and a
+   part reads. Neither says what it is for, so a host binds a key
+   without learning what the key does. DEMO_HOLD_A and DEMO_HOLD_B
+   are named for nothing on purpose.
+
+   THAT IS THE WHOLE BOUNDARY, AND IT IS NOT NAMED AFTER A CAMERA.
+   Naming it for one part's use of it is what makes a host look as
+   though it knows the demo's insides, and it does not scale: a
+   second part wanting different behaviour from the same gesture
+   would have to be routed by the host, or spell its own drag
+   bookkeeping out again. Two readings of the one gesture exist and
+   neither is the host's business:
+
+      Space_Look           springs it back on release and maps full
+                           deflection to 0x400 of camera yaw -
+                           effects/approach.txt section 8
+      src/part_credits.c   keeps it where it was left and maps it to
+                           an orbit about a measured pivot -
+                           section 7
+
+   WHAT A HOST STILL OWNS is the four things that are genuinely about
+   a window: which button starts a drag, the press point the
+   deflection is measured from, the division by the window's half
+   size, and ending the drag when focus is lost - the button-up is
+   then delivered elsewhere and never arrives, and the gesture would
+   read as held for good. A HELD KEY IS LOST THE SAME WAY and is
+   cleared with it.
+
+   A RELEASED DRAG EASES HOME IN THE CORE, on a 180 ms time constant
+   in src/demo.c, because how the gesture feels is the demo's and a
+   second host would otherwise have to reproduce it. A time constant
+   rather than a fraction a frame, so the swing takes the same time
+   whatever the host presents at; Demo_Advance already carries the
+   host's elapsed milliseconds, so nothing new crosses the boundary
+   to drive it.
+
+   A MAPPING IS PULLED BY A PART, NEVER PUSHED BY THE HOST, which is
+   what keeps one part's control out of another's. The orbit advances
+   only when src/part_credits.c asks for it, so a drag during the
+   approach cannot wind it, and the wheel count and the rest request
+   are latched on entry for the same reason - a notch spun during
+   another scene is not left waiting as a backlog.
+
+   ZERO AND UP UNLESS A HOST SETS ONE. src/main_ppm.c sets none of
+   the three, so the reference renders and the hardware comparisons
+   are untouched.
+
+3.4.  Anything that accumulates belongs to step()
+
+   THE DEMO HAS ONE CLOCK AND THE PORT HAS TWO, and that is the whole
+   of this. RELIC renders once a tick, so a counter the demo advances
+   inside its render advances once a tick by construction; there is
+   no other rate for it to follow. Section 3 split the two on purpose
+   - step() runs at 50 Hz whatever the host manages and frame() once
+   per presented frame - which is what keeps the demo's speed right
+   on a display that is not 50 Hz.
+
+   SO TRANSCRIBING BY LOCATION PUTS THE COUNTER ON THE WRONG CLOCK.
+   The faithful place in the listing is the render; the faithful
+   place here is step(). A counter left in the draw advances with the
+   display: faster in a small window, slower in a large one, and
+   unevenly when the two rates do not divide.
+
+   WORSE THAN EITHER IS SPLITTING IT. A counter advanced partly in
+   the draw and partly in the step gains a different amount on a tick
+   that drew twice than on one that drew once, so what should be a
+   steady beat stutters - a pause, then a rush. That is what the orb
+   scene's flare strobe did until g_FlareSizeStep moved wholly into
+   step(): effects/orb.txt 11.5 has the measurement.
+
+   THE ONES FOUND SO FAR, all now in step():
+
+      src/orbscene.c       g_FlareSizeStep, the flare strobe
+      src/part_valley.c    the birds' wing phases and their drift
+      src/part_explosion.c the ring scroll's two phases
+
+   A COUNT THE DRAW PRODUCES NEEDS AN ARM. Where the tick's advance
+   depends on something only a draw can know - how many slots read
+   the counter - exactly one frame a tick may supply it, because a
+   tick can draw twice or not at all. src/orbscene.c arms that in
+   step() and takes the count from the first frame after. Without the
+   arm the first tick's advance depended on whether a frame or a step
+   came first, which set the flare phase for the whole scene from the
+   host's frame rate.
+
+   STILL IN THE DRAW, AND KNOWN: Space_EaseRange and Space_StepBand
+   both ease once per call - g_sun_range by a quarter, g_band_now by
+   a half - and every caller is a frame routine, in 2.1, 2.3b, 2.4,
+   2.7 and the orb scenes. Over the same 1400 ticks of scene time
+   they run 186 times at 33 ms a frame, 307 at 20 and 615 at 10
+   [observed].
+
+   IT SHOWS IN THE ORB SCENES AND NOWHERE ELSE SO FAR. Rendered at a
+   matched tick, 2.3b, 2.4 and 2.7 come out byte for byte the same at
+   10, 17, 20 and 25 ms a frame: their target holds still long enough
+   that easing it oftener lands on the same value. 2.11's band does
+   not - its target is the flare's radius, which moves every tick -
+   so about 500 pixels across the band's seven visible rows differ at
+   17 ms on roughly one tick in three [observed]. They are harder to
+   move than the others because the count they ease toward,
+   Space_CountSaveUnder, measures the drawn frame: the measurement
+   belongs in the draw and only the easing should move.
+
+   THE TEST, for anything new: does a file-scope value get +=, ++ or
+   -- inside a frame routine? If it does, and it is not a render
+   buffer being filled, it is on the wrong clock.
+
+3.5.  A page's handles on the audio, and why it polls
+
+   A BROWSER IS A SECOND HOST AND NOT A SECOND BOUNDARY. src/host.h
+   is what the demo offers a host; this is what ONE host offers the
+   page wrapped around it, and it lives in src/main_sdl.c with the
+   window and the keys rather than anywhere under the core. Four
+   calls, all on two values the m and +/- keys already move:
+
+      Host_SetMute(int)     Host_Muted(void)
+      Host_SetVolume(int)   Host_Volume(void)
+
+   THE PAGE POLLS AND IS NEVER TOLD. A control pressed in the demo
+   has to reach the page's checkbox and slider, and the obvious way
+   - calling out of C when a key is pressed - couples this file to a
+   function name in a document it should know nothing about, and
+   needs a guard around every such call. Reading the two getters on
+   a timer costs nothing, keeps the traffic one way, and leaves the
+   demo's own keys the single source of truth.
+
+   MUTE AND LEVEL ARE KEPT APART HERE, where the keyboard's + also
+   clears mute. A page has two controls and one should not move the
+   other; the poll shows whatever the keys then do.
+
+4.  The timeline runs on the music
+
+   0x0021ff3c arms a position in the module and 0x0021ff64 polls
+   whether the replayer has reached it [verified]. Scenes END ON THE
+   MUSIC, not on a frame count - maybe_Space_RunSunScene and several
+   steps of Space_RunPart loop on exactly that.
+
+   So the clock is an interface from the first commit, even with
+   nothing playing:
+
+       Music_Arm(order, row, fallback)  ORIGIN 0x0021ff3c
+       Music_Reached(elapsed)           ORIGIN 0x0021ff64
+       Music_BreakTimeline()            ours - see below
+       Music_Tick()                     monotonic replayer ticks
+       Music_Advance(ms)                a silent clock steps here
+
+   EVERY GATE CARRIES THE LENGTH TO USE WHEN THE MUSIC CANNOT
+   ANSWER, and elapsed is the PART'S OWN ticks since the arm rather
+   than the music clock's - because the hosts that need the fallback
+   are exactly the ones that never advance a music clock.
+
+   music_silent.c was the first implementation. It plays nothing and
+   advances at six ticks a row, fifty ticks a second - Protracker's
+   defaults, which are also PAL's frame rate, which is why a demo of
+   this era can treat the two as one clock. The timeline runs true
+   without a note being played.
+
+   NO AUDIO CODE IS BEING REVERSE ENGINEERED. Player 6.1 is a
+   documented third-party replayer and reproducing it is not what
+   this project is for - subsystems/music.txt.
+
+4.1.  ibxm sits behind the same four calls
+
+   src/music_ibxm.c is the second implementation and the one that
+   builds. It keeps the silent clock for when no module is loaded,
+   so the timeline is unchanged until one is, and hands the mixing
+   to ibxm when one is - a public-domain ProTracker, S3M and XM
+   replayer, src/third_party/ibxm, carried as it came.
+
+   THE CUE IS A DIRECT TRANSLATION, NOT A STAND-IN. ibxm exports
+   replay_get_sequence_pos and replay_get_row, which are exactly the
+   two words 0x0021ffa2 and 0x0021ffa6 the demo's own replayer
+   compares an armed pair against at 0x00220dec [verified], and
+   seq_pos indexes module->sequence, so it is a song position and
+   not a pattern number. Music_Reached is therefore the demo's own
+   test, and the measured lengths became its fallbacks.
+
+EVERY ARM IS ANSWERED, BY A POLL OR BY A WAIT. 24 sites arm a
+   cue, 18 poll one at Music_PollCue and 6 block on it at
+   Music_WaitCue, and 18 + 6 is 24 [verified, read off every site].
+   The arm immediately before each answer carries the pair, D0 the
+   order and D1 the row. Seventeen of the eighteen polls are wired;
+   the waits are section 4.5.
+
+       +---------------+----------+--------+----------------------+
+       | poll          | cue      | arm    | the port's phase     |
+       +===============+==========+========+======================+
+       | 002ce90c sun  | 0x02,0x18| 002ce8f8| part 1 ends         |
+       | 002cd250      | 0x04, 0  | 002cd220| NOT REPRESENTED     |
+       | 002cd280      | 0x04,0x10| 002cd270| part 3 ends         |
+       | 002cd3d6      | 0x08, 0  | 002cd39a| part 4 ends         |
+       | 002cd08e wind | 0x15, 0  | 002cd07e| part 6 ends         |
+       | 002cc82e      | 0x19, 0  | 002cc818| part 8 ends         |
+       | 002cc8bc      | 0x1e,0x34| 002cc8ac| part 9's pan ends   |
+       | 002cc90a      | 0x20, 0  | 002cc8fa| part 9's clamp ends |
+       | 002cc158 eart | 0x29, 0  | 002cc148| the earth's phase 1 |
+       | 003138a6 sand | 0x01,0x10| 0031388a| part 13 ends        |
+       | 0036deae      | 0x05, 0  | 0036de92| the temple's shot 1 |
+       | 0036c144      | 0x09,0x32| 0036c136| the descent         |
+       | 0036c3e6      | 0x1f,0x28| 0036c3d2| part 14 ends        |
+       | 002c908c      | 0x24, 0  | 002c9076| the swirl           |
+       | 002c9124      | 0x24,0x24| 002c9114| part 15 ends        |
+       | 00314426 vall | 0x25,0x1d| 003143fc| part 17 ends        |
+       | 00314858 city | 0x26,0x2e| 00314828| part 18 ends        |
+       | 002c85d0 dest | 0x27,0x3c| 002c8588| part 19 ends        |
+       +---------------+----------+--------+----------------------+
+
+   THE ONE THAT IS NOT WIRED HAS NOWHERE TO GO.
+   maybe_Space_RunPlanetScenes runs three stages and our part 3 is
+   named for two of them - "Planet lit, AND THE LIGHT" - so the
+   boundary 0x04,0 would separate is inside it. Representing that
+   cue means splitting the part first.
+
+   ELEVEN OF THEM ARE THE SAME SHAPE: one cue, armed on the part's
+   first tick and ending the part. They share Relic_Gate and
+   Parts_GateStep in parts.c rather than each spelling it out. The
+   temple's three, the return flight's two and the earth's are the
+   phase-internal ones and stay hand written.
+
+   EVERY FALLBACK IS WHAT THE PART'S LENGTH ALREADY WAS, so a silent
+   host and a broken timeline reproduce the old behaviour exactly -
+   checked part by part, all 21 lengths unchanged.
+
+   LANDMINE: A GATE MUST BE ABLE TO LENGTHEN A PART, NOT ONLY SHORTEN
+   IT. Parts_GateLength first returned the gate's tick or the
+   fallback, which quietly abandons any cue that has not landed by
+   the fallback - and the demo's poll is a LOOP, drawing until its
+   cue arrives however long that takes. Measured against our own
+   music, the city's cue fires 331 ticks after its part had already
+   ended on the fallback and the destruction's 375, so both scenes
+   ran early and the explosion's bang arrived seven seconds late.
+   While a live cue is still pending the gate now reports
+   PARTS_GATE_OPEN, which handover reads as open-ended and a phase
+   test reads as not yet; Music_CueLive is the test for whether a cue
+   can still answer at all, and it is false on a silent host, which
+   is what keeps the fallbacks exact there.
+
+   WHICH TURNS A CUT INTO A HOLD. A part whose picture arrives early
+   now waits on its cue instead of handing over, so the error shows
+   as a scene running long rather than as the next one starting
+   wrong, and the sound lands where it belongs either way. The cure
+   for the length itself is the upstream deficit: our picture reaches
+   the city 331 ticks ahead of the music, and the temple at 6922
+   ticks is the largest unmeasured span between Cmodule2's start and
+   there.
+
+   A PART THAT ENDS ON A CUE CANNOT HAVE A FIXED LENGTH, so
+   Relic_Part gained an optional length() beside its ticks and the
+   handover prefers it. The temple's and the return flight's report
+   where their last cue actually fell.
+
+   THE CUE IS ONLY BELIEVED WHEN TWO THINGS HOLD.
+
+   -  THE TIMELINE IS INTACT. A cue is an absolute song position, so
+      it means nothing once the run stops being continuous from part
+      0: Demo_GotoPart, Demo_SeekTick and a long Demo_Skip all call
+      Music_BreakTimeline and the fallbacks serve the rest of the
+      run. Skipping therefore costs music sync, which is accepted.
+
+   -  AUDIO IS ACTUALLY BEING PULLED. LANDMINE: ibxm's position only
+      advances inside replay_get_audio, so a host that loads a
+      module and opens no device leaves it at 0 for ever and a cue
+      gate would HANG a part rather than fail. Music_Reached counts
+      Demo_Audio calls and takes the fallback unless the count has
+      moved since the arm. main_sdl.c is the only host that pulls,
+      so every relic_ppm render takes the fallback and is
+      reproducible.
+
+   THE TUNES ARE P61 AND ARE DEPACKED ON THE WAY IN. Cmodule1 and
+   Cmodule2 of relic.dat are Player 6.1's own packed format - a
+   sample-data offset, then 39 patterns and 30 samples each
+   [observed] - which ibxm does not read. Music_Load tries
+   P61A_Test first and depacks when it answers, so the archive's
+   chunk goes straight in and there is no converted file anywhere.
+
+   src/third_party/prowizard/p61a.c IS LIBXMP'S DEPACKER, MADE
+   SELF-CONTAINED. Its two functions are carried unchanged; what
+   this project supplies is the shell - a reader over a buffer
+   where libxmp passes a file handle, a growable writer where it
+   passes a FILE, and the two tables prowiz.h held. No disk is
+   touched at any point.
+
+   IT PRODUCES REAL PROTRACKER MODULES [observed]:
+
+       +----------+-----------+--------+--------+-----------+
+       | chunk    | depacked  | magic  | orders | duration  |
+       +==========+===========+========+========+===========+
+       | Cmodule1 |  859190   | M.K.   |   42   |  206.4 s  |
+       | Cmodule2 |  966814   | M.K.   |   43   |  272.7 s  |
+       +----------+-----------+--------+--------+-----------+
+
+   AND THE CUE ORDERS CHECK OUT, which is the test that the depack
+   is right rather than merely plausible: the five the demo arms
+   are 31, 9, 31, 36 and 36, and every one falls inside a song of
+   42 or 43. A depack that came out with twelve patterns would be
+   wrong whatever it sounded like.
+
+   NOT THE COMPOSER'S FILE. P61con strips unused patterns and
+   samples and re-encodes effects, so what comes back plays the
+   same and is not the original - the titles come back blank
+   because P61 does not keep them.
+
+   THE HOST'S SIDE IS A QUEUE, NOT A CALLBACK. Demo_Audio is called
+   from main_sdl.c's own loop and topped up to about 125 ms, which
+   is what stops fast forward outrunning the device - the top-up
+   stops at its target however many ticks a pass ran. Volume is
+   applied where the samples are queued and not in the mixer, so
+   muting never costs the replayer its place.
+
+   WHICH MAKES THE PULL THE TRANSPORT CONTROL. Because the position
+   moves only inside Demo_Audio, the host steers the song by whether
+   it pulls:
+
+      pause       stop pulling and stop the device. The song freezes
+                  where it stands and resuming carries on from it.
+      step        pull ONE field, AUDIO_RATE / 50 pairs, and discard
+                  them. The tick and the song move together, so the
+                  picture cannot walk away from the score.
+      fast fwd    keep pulling at the device's own rate. The ticks
+                  outrun it and the sync is lost, which is accepted.
+
+   A STEP THAT PULLS NOTHING IS THE BUG THIS PREVENTS: the song sits
+   at the tick the first pause landed on while the picture advances,
+   and every cue gate after it answers against a stale position.
+
+4.2.  One tune an act, and a third one for the typing
+
+   THE ACT LOADS THE TUNE. Demo_RunAct1 0x0021f7f4 loads the chunk
+   named at 0x2378ec and Demo_RunAct2 0x0021f82a the one at
+   0x2378fc, and those two names are Cmodule1 and Cmodule2
+   [verified]. Act one is SpaceModule_Run(0) - everything to the
+   orb's fall - and act two is the other six module calls, so the
+   switch falls between the Earth shot and the sand, which is
+   part 2.13 in the running order.
+
+   CMODULE3 IS NAMED AT 0x0023790c AND IS NOT THERE. Nothing
+   references it and relic.dat does not carry it - a third tune
+   that did not survive, left in the name table.
+
+THERE IS A THIRD MODULE AND IT IS IN THE EXECUTABLE.
+   g_IntroModule 0x002c8084, file offset 0x000a8db4 of hunk CODE_02,
+   is a P61 module Demo_Run points the replayer at from 0x0021f78a
+   and starts on FIELD 32 - before anything has been loaded
+   [verified]. Cmodule1 does not take over until field 275, when
+   Terminal_Tick raises g_IntroDone and SpaceModule_Part0 calls
+   Music_StartModule again at 0x002c836c [observed, both frames off
+   a breakpoint on a clean run].
+
+   SO THE TYPING HAS MUSIC, JUST NOT CMODULE1'S. The clicking under
+   the terminal is the embedded module's own first rows; nothing in
+   the terminal pokes Paula, and its one audio-looking write - #1 to
+   g_SceneDisplayUp at 0x0033bcfc - goes to a word no code reads.
+   TERM_MUSIC_AT 242 is right for Cmodule1 because the terminal's own
+   script ends there; what the port is missing is the intro module,
+   so it plays Cmodule1 under the typing instead.
+
+   LANDMINE: THE NAME TABLE READS AS IF THERE WERE ONLY TWO TUNES.
+   0x002378ec lists Cmodule1 to Cmodule4 and the archive holds 1 and
+   2, which invites the conclusion that the intro is silent. The
+   intro's tune is not a chunk at all.
+
+   THE 32 IS THE DEMO'S START-UP AND IS NOT PART OF THE TIMING. Two
+   measured numbers place it: Cmodule1 takes over on field 275, and
+   the terminal's own script reaches that point on ITS tick 242, so
+   the terminal's tick 0 is field 33 - one field AFTER the replayer
+   started. The music and the first character arrive together. A port
+   with no start-up therefore begins the intro module at its own tick
+   0; starting it at 32 puts the clicking two thirds of a second
+   behind the typing.
+
+   LANDMINE: THE TERMINAL DOES NOT STOP THERE. The same branch
+   winds the cursor back 0x10 and carries on, so the typing loops
+   until the act moves on. The flag is raised once; the text is not
+   the clock.
+
+   Demo_GotoPart follows the act and music_follow the tick, which
+   is what lets a part start its own tune partway through itself.
+   Skipping into any part picks up that part's tune, so jumping
+   about does not leave the wrong one playing. TERM_MUSIC_AT carries
+   the measured 32.
+
+
+4.3.  P61's speed word, and what the depacker does with F
+
+NO CIA TIMER IS PROGRAMMED, AND THE TEMPO IS STILL HONOURED.
+   Nothing in 0x0021ff00 - 0x00222000 writes a CIA timer register -
+   the only 0xbf access anywhere in the replayer is 0x00bfe001, the
+   LED and audio-filter bits - and no scene calls a per-frame music
+   routine either: every call in from the demo's code is
+   Music_ArmCue, Music_PollCue or 0x0021ff50 [verified]. P61 counts
+   the tempo out in software instead.
+
+   LANDMINE: "NO TIMER" DOES NOT MEAN "ONE TICK A FIELD". The intro
+   module settles it, because its row 0 carries F0F beside F40 -
+   speed 15 at 64 BPM. Ignoring the tempo would make its rows 15
+   fields long; honouring it makes them 15 / (64 * 2 / 5) = 29.3.
+   The demo takes 30 [observed, row 1 on field 61 and row 2 on 91].
+   Its rows 3 and on carry F02 beside F80, predicting 1.95 fields a
+   row against a measured 1.94. So P61 implements the full
+   ProTracker model and IBXM MATCHES IT TO ABOUT ONE PER CENT on
+   this module. Stripping the tempo commands, which an earlier
+   reading of the missing CIA suggested, is wrong.
+
+   THE SPEED WORD IS g_P61Speed 0x002217b0, seeded to 6 by P61_Init.
+   LANDMINE: its static xref list shows that init as the only
+   writer, because the replayer's own stores reach it through A3 and
+   Ghidra cannot resolve them. It does change, and reading it live is
+   the only way to see the module's speed.
+
+   P61 IS NOT A SUPERSET OF PROTRACKER. P61con compresses a
+   ProTracker module; the effect set is ProTracker's, re-encoded.
+   p61a.c takes the effect as c1 & 0x0f and the parameter as c2
+   straight through, with three special cases and no handling of F at
+   all: effect 8 is folded to 0, and 5, 6 and 0x0a get their
+   parameter's sign unpacked. So there is nothing in the F
+   translation to correct, and the depacked Cmodule1 is
+   self-consistent - 42 orders, all 39 patterns referenced, and its
+   only F parameters anywhere are 0, 2, 3, 6, 100 and 126.
+
+   WHICH IS HOW THE INTRO MODULE WAS FOUND. g_P61Speed reads 15
+   through the terminal's first rows and no F0F exists in Cmodule1,
+   so what was playing could not have been Cmodule1 - and the live
+   module's header matched neither archive chunk but did match the
+   executable at file 0x000a8db4. Section 4.2.
+
+CMODULE1 ITSELF STILL RUNS FAST IN OUR PORT. From its real start
+   at field 275 the demo reaches cue 1 at 02.1a on field 1138, 863
+   fields later, where ibxm takes 546 from a standing start. Both
+   sides read speed 2 at order 0 and 6 from order 1, and 84 rows in
+   500 fields in the speed-6 stretch, so the gap is in the head of
+   the module. UNMEASURED, and the intro module's agreement says it
+   is worth measuring the same way: P61's speed and row sampled
+   through Cmodule1's first two orders, against ibxm's.
+
+
+4.4.  The tunes are parsed once, and the queue is latency
+
+   MUSIC_PRELOAD PARSES ALL THREE AT THE HOST'S START-UP. Switching
+   act used to depack a Cmodule inside the frame that asked for it -
+   822 KB through a byte-at-a-time reader - so the main loop stopped
+   topping the device up, the queue ran dry, and the handover
+   arrived with a thud and the next tune behind where it belonged.
+   g_tune owns the three parsed modules for the run; a switch is a
+   new_replay and a rewind.
+
+   A HOST WITH NO AUDIO MUST NOT CALL IT, which is why it is not in
+   Demo_Init: relic_ppm would pay the whole depack on every render
+   for a tune it never plays. Without it Music_Start finds nothing,
+   Music_Playing stays false, and every gate runs on its fallback -
+   which is what keeps a PPM render reproducible.
+
+   THE QUEUE DEPTH IS HEARD AS DELAY. Everything reaches the device
+   AUDIO_TARGET behind the mix, and at an eighth of a second that is
+   6 PAL fields - enough that the typewriter audibly trails the
+   typing it is supposed to land with. Three fields, 60 ms, still
+   leaves two frames of slack at 60 Hz, and nothing stalls the loop
+   long enough to drain it now the tunes are parsed up front.
+
+   OPEN: THE SWITCH STILL STEPS. Music_Start drops the live replay
+   and builds another, and the samples already queued end wherever
+   the old tune left them, so the join is a discontinuity rather
+   than a ramp. A few milliseconds of fade either side would settle
+   it; nothing in the demo needs one, because Paula just carries on.
+
+
+4.5.  Holds and waits, and how a span is measured
+
+   A SCENE CAN RUN FOR SECONDS BEFORE IT MOVES. Space_RunSunScene is
+   entered on field 273 - the field Cmodule1 starts - and g_SunWorldX
+   0x002e0c28 holds its -400 entry value until field 388, where it
+   begins stepping +2 a field. It fits -400 + 2 * (field - 388)
+   exactly at both 500 and 600 [observed]. So 115 fields pass with
+   the music running and the render target black while the scene
+   builds its tables. A port with no tables to build has to hold that
+   span deliberately or its sun leads the score by two and a third
+   seconds.
+
+   THE DEMO DOES NOT MISS A VBL, and the belief that it did was an
+   artifact of measuring under warp - which starves the scene of
+   cycles while the music keeps absolute time, so it manufactures
+   this exact symptom. g_VblTotal 0x00237236 is the demo's own field
+   count and it stays a constant 29 behind the emulator's PAL field:
+   29 at 10368 and 29 at 22067, across the heaviest scenes it has
+   [observed]. g_SunWorldX steps 2.00 units a field over 500 to 600,
+   not the 1.11 a warp run showed.
+
+   SO A FIELD COUNT AND A MUSIC POSITION ARE INTERCHANGEABLE, and our
+   tick may be compared against the demo's field directly. Over the
+   sixteen spans between consecutive cue fires that lie within one
+   module, our ibxm agrees with the demo's own replayer to 20813
+   fields against 20817 - four fields in 437 seconds, and every
+   single span within eleven [observed]. relic_ppm -cues dumps the
+   row timing that measurement is made from.
+
+   WHAT IS BANNED IS A WARP-DERIVED NUMBER, which describes neither
+   the scene nor the music. A span taken that way is re-measured, not
+   adjusted.
+
+   AND THE HOLDS ARE CUES TOO. Music_WaitCue 0x0021ff50 is the
+   blocking half of the pair: where Music_PollCue tests g_MusicCueHit
+   and returns either way, this SPINS on it, with bit 6 of 0x00bfe001
+   - the fire button - as the only escape [verified]. That is what
+   the six arms with no Music_PollCue after them are for. They are
+   not dead; they are waited on.
+
+       +---------------------------+----------+------------+
+       | scene                     | arm      | waits at   |
+       +===========================+==========+============+
+       | Space_RunSunScene         | 002ce8d8 | 002ce8de   |
+       | maybe_Space_RunWindowScene| 002ccfea | 002ccff0   |
+       | Space_RunEarth            | 002cc1dc | 002cc1e2   |
+       | Temple_RunShot1           | 0036df90 | 0036df96   |
+       +---------------------------+----------+------------+
+
+   SO A SCENE IS OFTEN A HOLD AND THEN A RUN, and the two cues share
+   the one armed slot in turn: the window scene arms (0x0c,0), waits,
+   and only then arms the (0x15,0) that ends it. Its photograph is
+   held for 480 fields that way - 479 by our own replayer, 0a.00 to
+   the armed 0c.00, with g_PullBackVel 0x002e0be2 leaving zero as it
+   releases - and the
+   pull-back that follows matches ours step for step, g_PullBackScaled
+   reading -5851 ten steps in on both sides [observed].
+
+   A PORT THAT RUNS THE SCENE STRAIGHT THROUGH IS THEREFORE SHORT AT
+   THE FRONT AND LONG AT THE BACK, which is what makes a held still
+   leave early and everything downstream arrive late.
+
+   LANDMINE: A POLL INSIDE A PART'S OWN ADDRESS RANGE ENDS A PHASE,
+   NOT THE PART. Space_RunPart holds three of them and spans parts 8,
+   9 and 10, and only the first sits before part 9's 0x002cc840. The
+   other two are +0x32c and +0x370 into it - they close the camera
+   pan and the claw clamp in turn - and part 10 has no cue at all.
+   Ending the PART on the first of them drops the clamp and the
+   flash, so the shot cuts mid-pan straight to the side-on
+   explosion, and part 10 then finds its cue already passed and
+   lasts no time at all. Pair every poll with the part whose address
+   range CONTAINS it before wiring it.
+
+   WHERE THE GATES STAND, measured against our own music: parts 1, 4,
+   6 and 8 reach their cue within 1 to 28 ticks of their fallback, so
+   the holds have brought them into line. Part 9's two phases answer
+   at 1419 and 292 against fallbacks of 1394 and 285.
+
+   THE VALLEY WAS THE SAME MISTAKE AGAIN. Valley_RunScene spans the
+   valley and the city, and its first poll 0x00314426 is inside the
+   valley's own 0x00314304 to 0x0031460c - it closes the OPENING, the
+   loop VY_OPEN_TICKS stands for, and the part's own comment said as
+   much. Ending the part there released no rock, ran no impact and
+   cut straight to the city. Its second poll 0x00314858 sits past all
+   three of the city's shot thresholds - 0x0031460c, 0x003146e0 and
+   0x003147fa - so THAT one does end its part.
+
+   THE EARTH'S HOLD IS A WAIT, NOT A CONSTANT: Space_RunEarth arms
+   (0x29,0x3e) at 0x002cc1dc and blocks on it at 0x002cc1e2, which is
+   what EA_HOLD stood in for.
+
+   A WAIT CAN BE NEARLY NOTHING AND STILL MATTER. Temple_RunShot1
+   arms (0x0a,0) at 0x0036df90 and blocks at 0x0036df96, returning at
+   0x0036df9c - measured, the block begins on field 15242 and ends on
+   15255, THIRTEEN fields [observed], because the descent's own cue
+   had already carried the music to 0x0a. It is a RESYNC POINT rather
+   than a pace: in a clean run it costs nothing, and it absorbs
+   whatever the picture has gained when the run is not clean. That is
+   why a scene can drift and the one after it still land right.
+
+
+4.6.  Seeking the replayer, and what a jump is worth
+
+   ONE PRIMITIVE SERVES A SEEK AND A FAST FORWARD: advance the
+   replayer and drop what it hands back. ibxm produces one tick of
+   audio a call, so Music_DrainTicks counts calls and Music_DrainTo
+   keeps calling until the position has passed a pair - the same two
+   floors Music_Reached tests.
+
+   LANDMINE: replay_set_sequence_pos RESETS THE TEMPO. ibxm says so
+   itself, and it is fatal here: RELIC's modules set their speed and
+   tempo in their first two orders - F02 with F7e, then F06 - so a
+   jump to order 31 starts at the default 6 and 125 BPM and plays
+   every row after it at the wrong rate until the next F command.
+   Music_SeekTo therefore rewinds the tune and DRAINS from its start,
+   which costs only mixing: a whole module is a fraction of a second
+   once the pre-parse of section 4.4 has done the depack.
+
+   A MARK CARRIES WHERE THE MUSIC STANDS. Relic_Mark gained tune,
+   order and row, and a jump drains the replayer to them, so the run
+   from that mark is the run a full play-through would have had. ONLY
+   THE BOUNDARIES A CUE DECIDES CAN SAY: a part that follows a
+   counter-ended one - a logo screen, the debris - has no position of
+   its own to state, so its mark carries tune -1, seeks nothing, and
+   reports that it did not.
+
+       +------+---------------------+------+-------+
+       | mark | scene               | tune | pair  |
+       +======+=====================+======+=======+
+       |  p0  | terminal            | intro| 00.00 |
+       |  p1  | planet and sun      |   0  | 00.00 |
+       |  p2  | logo one            |   0  | 02.18 |
+       |  p4  | asteroid            |   0  | 04.10 |
+       |  p5  | logo two            |   0  | 08.00 |
+       |  p7  | logo three          |   0  | 15.00 |
+       |  p9  | the clamp           |   0  | 19.00 |
+       | p10  | ship blows up       |   0  | 20.00 |
+       | p14  | the temple          |   1  | 01.10 |
+       | 14b  | the descent         |   1  | 05.00 |
+       | 14c  | the orb             |   1  | 09.32 |
+       | p15  | ship departing      |   1  | 1f.28 |
+       | p16  | debris              |   1  | 24.24 |
+       | p19  | planet destroyed    |   1  | 26.2e |
+       | p20  | the ark             |   1  | 27.3c |
+       +------+---------------------+------+-------+
+
+   EACH PAIR IS THE PREVIOUS PART'S OWN ARMED CUE, not a figure
+   measured for the mark - so a span that changes cannot leave one
+   stale, and nothing here is a number of ours.
+
+   A SEEKED JUMP LEAVES THE TIMELINE INTACT, which is the whole point
+   of it: Music_BreakTimeline would put every gate after the jump on
+   its fallback, and the fallbacks are what the jump was meant to get
+   away from. A jump that could not seek breaks it as before.
+   Demo_MusicLine reports which happened and prints the position it
+   actually landed on, so the claim is checkable rather than trusted.
+
+   LANDMINE: LEAVING IT INTACT IS NOT ENOUGH - LANDING HAS TO MEND
+   IT. The break was one way: nothing set g_timeline back, so a
+   single jump to a mark that could not seek put the WHOLE SESSION on
+   fallbacks, and every accurate seek afterwards reported itself in
+   sync and then drifted exactly as though it had never seeked.
+
+   It reads as a scene running fast rather than as a broken flag,
+   which is what makes it worth writing down. The return flight is
+   the clearest case: its swirl waits on (0x24,0) at 1443 ticks into
+   the part, and on the fallback it ends at 362 instead - so the
+   burst arrives 322 ticks early and its bang lands seconds late. The
+   state says so if asked. g_PortalOpen grows one per four ticks, so
+   90 opens is 360 swirl ticks and not 684, and the burst's grow has
+   left its 160 seed by the tick the swirl should still have been
+   running. Music_SeekTo now sets g_timeline when it lands.
+
+   AND FAST FORWARD DRAINS WITH THE TICKS. Demo_Skip steps state
+   without drawing and used to leave the replayer behind at the audio
+   device's own rate, which desynchronised by construction. It now
+   drains a tick of music for every tick it skips, and no longer
+   breaks the timeline - the music costs nothing next to a part's
+   step(), which is what makes the skip slow in the first place.
+
+
+5.  Subpixel placement, and the DIVERGENCE marker
+
+   THE FRACTION IS ALREADY THERE. Everything the demo places on
+   screen is placed from fixed point and then truncated at the last
+   step. Scene_ProjectAndDrawSun is the clearest case:
+
+       g_FlareScreenX = (wx << 8) / 0xfa0 + 0x50
+
+   That is 24.8 fixed point, and the eight fractional bits exist
+   until the framebuffer index throws them away. The same is true of
+   the logo's zoom accumulators, the texture mapper's u and v, and
+   every sprite centre in the sun scene.
+
+   So subpixel placement needs NO DATA OF OUR OWN. It means not
+   discarding a fraction the demo computed, which is exactly what
+   section 2 permits: enhance the sampling of the demo's own data,
+   never substitute data of our own. An interpolated sprite edge is
+   a better reading of the demo's own number; an invented one is a
+   rule 12 violation.
+
+   WHAT IT COSTS is that a blit stops being a copy. A sprite at
+   x = 61.6 covers two destination columns with weights, so
+   blit_masked and blit_additive become weighted writes, and a
+   masked edge needs the mask interpolated too or the cutout gets a
+   hard step back.
+
+   SCALE 1.0 MUST NOT CHANGE. Rule 20 makes scale 1.0 the reference
+   every other scale is checked against, and tools/ctest.py enforces
+   it byte for byte. So subpixel is a MODE, and it is off at scale
+   1.0 by construction: below one destination pixel per demo unit
+   there is nothing to interpolate into. It engages above 1.0, where
+   the fraction has somewhere to go.
+
+   FRAMERATE IS A SEPARATE AXIS AND SHOULD STAY SEPARATE. The
+   simulation tick is a PAL vertical blank and nothing else sets the
+   rate - section 3. Running the simulation faster would change
+   every effect that integrates per frame, the diffusion fields
+   worst of all, and would break the music sync the timeline hangs
+   on.
+
+   The split that works is fixed timestep, interpolated
+   presentation, and it is in place - section 3. Demo_Advance steps a
+   fixed 50 Hz timestep and hands the part the leftover fraction of a
+   tick as Relic_Frame.subtick, 0 to 0xffff; that fraction is the
+   interpolation alpha. The simulation stays at 50 Hz, reproducible,
+   and only what the viewer sees is smoothed.
+
+   RE-EVALUATE, DO NOT BLEND, WHERE THE MOTION IS A FORMULA. A part
+   whose positions are a function of the tick can simply be asked for
+   the fractional tick, which costs no latency and no second copy of
+   anything. Part 2.3 does that: it re-evaluates its projection at
+   tick + subtick, and the sun, both flares and the shadow's
+   terminator follow the clock instead of the tick boundary - see
+   effects/planet_sun.txt section 10.
+
+   Blending two bracketing states is the fallback for whatever cannot
+   be re-evaluated, and it is there that the latency and the second
+   copy are owed, which is why the choice belongs per part - a
+   handful of sprite centres are cheap either way, a 40,960-cell
+   diffusion field is not.
+
+   HOW TO MARK IT. Rule 18 already keeps a deliberate divergence;
+   the marker is spelled DIVERGENCE and sits with ORIGIN and OURS at
+   the head of a routine, saying what the demo does and what we do
+   instead:
+
+       /* ORIGIN 0x002ceaf8
+        * DIVERGENCE: the demo truncates the sprite centre to whole
+        * pixels. Above scale 1.0 this keeps the 24.8 fraction and
+        * weights the two covered columns. Scale 1.0 truncates as
+        * the original does, so ctest still matches. */
+
+   A routine with DIVERGENCE still needs its ORIGIN: the divergence
+   is from something, and the address is what lets a reader check
+   what.
+
+   RELIC.DAT IS READ BY src/dat.c AND IS OPTIONAL. Every part gets
+   what it can out of the executable; only textures live in the
+   archive. A host passes its path or does not, and a part that
+   wanted a chunk says so rather than failing - the sun scene draws
+   a black background and reports it. That keeps the no-dependency
+   PPM host buildable and runnable with nothing but the executable.
+
+6.  Building it
+
+   TWO BUILD SYSTEMS, NEITHER GENERATING THE OTHER. There is no
+   CMake: a generated solution is a file you cannot edit in the IDE
+   and keep, and emcc does not need one.
+
+   Windows - src/relic.sln, hand written, v141, SDL2 from
+   src/third_party/SDL with direct relative paths:
+
+       relic       the SDL2 host
+       relic_ppm   the no-dependency host; links only the CRT
+
+   Keep relic_ppm buildable. It is what runs on a machine with no
+   SDL and what tools/ctest.py drives.
+
+   Web - tools/build_web.sh, which GLOBS src/*.c, so adding a part
+   means editing one file, the .vcxproj.
+
+   RUN THE WEB BUILD EVEN WHEN NOT SHIPPING ONE. emcc is clang with
+   -std=c89 -pedantic; MSVC's /TC is far laxer and has no C89
+   switch at all. The web build is the only thing that actually
+   holds the C89 line. It globs src/*.c but skips main_ppm.c and
+   agent.c, the two files that are not part of the core.
+
+   6.1  Driving it without a window
+
+   relic_ppm -agent holds the demo on one frame and takes verbs on
+   a named pipe: go to a part, step it a tick at a time, read a
+   named variable, write the frame out as a PPM. It is the way an
+   effect gets looked at while it is being transcribed, and its
+   render path is byte-identical to the batch -p/-t/-n mode.
+
+   Debug|Win32 only, and 22 of the effect files carry /Gh /GH
+   there. subsystems/agent_mcp.txt is the protocol, the limits and
+   what the map file can and cannot tell you.
+
+   A START TICK IS PLAYED UP TO, NOT JUMPED TO. -t N runs the part's
+   step() from zero before it renders anything, and the skip keys do
+   the same through Demo_SeekTick. An accumulated value - an eased
+   altitude, a warp scale, an LCG rolled a thousand times - exists
+   only as the sum of every tick before it, so entering at tick N
+   with that state still at its initial value puts a handover keyed
+   on the tick N ticks late. The cost is one step() per skipped tick,
+   with no drawing, and the result is byte-identical to playing
+   through: tick 2364 of the temple renders the same file either way
+   [verified].
+
+   THE SKIP KEYS MOVE BY MARK, NOT BY PART. A part is one scene in
+   most cases and then a mark and a part are the same thing, but a
+   module holding several shots declares the ticks the others start
+   at, and [ and ] stop at each. The temple declares one at tick 2356
+   for the descent, which is otherwise forty seconds of the ruins
+   away. parts.h carries the table and the window title names the
+   mark it is on.
+
+7.  A part of our own, past the end
+
+   src/part_credits.c SHOWS THE DEMO'S GEOMETRY AND IS NOT THE
+   DEMO'S. RELIC stops on the ark; this part is a turntable for
+   looking at what Fspacedata holds, and it is last in the registry so
+   every index below it is a scene the demo actually has.
+
+   SECTION 2 STILL APPLIES TO IT. The model, its closed claw pose and
+   its spin rate of 0x14 a tick are the demo's, read from the geometry
+   chunk and from Anim_SceneTick's mode 1. What is ours is the
+   framing, and the rule that keeps that honest is that the camera is
+   MEASURED, not chosen: Ship_Bounds walks the drawn objects, honours
+   the skip table and reports the box's centre and its largest
+   half-extent across all three components, and the rest distance and
+   both ends of the dolly's travel come out of that. The one number
+   of our own is how much of the frame the model fills at rest.
+
+   THE RADIUS SPANS ALL THREE COMPONENTS BECAUSE THE VIEW CAN ORBIT.
+   Taking it across only the two the object spin turns is right for a
+   fixed camera, and wrong as soon as a drag can swing the third onto
+   the view axis, where it decides how close the model may come
+   before it clips and how far before it overflows.
+
+   THE PIVOT IS THE MODEL'S CENTRE, WHICH COSTS TWO ROTATIONS.
+   Scene_TransformProject subtracts the camera BEFORE it rotates, and
+   that one ordering is behind both of them:
+
+   o  The spin turns vertices about the geometry's origin before the
+      subtraction, so a camera parked at the measured centre would be
+      left behind as the model turned and the model would circle the
+      frame. The part turns the centre by the same angle first.
+
+   o  The camera distance has to go in through the INVERSE of the
+      camera rotation. Put straight into cam[1] it leaves the pair of
+      camera angles rotating the scene about the eye, which is a pan;
+      taken back through the inverse first, the same pair orbits the
+      pivot. At rest the two are identical, which is what makes the
+      change checkable - the undragged frame does not move a pixel.
+
+   A DRAG ORBITS AND STAYS WHERE IT IS LEFT, against the springy
+   reading the space scenes take of the same gesture - section 3.3. A
+   drag across the whole window is one turn, so full deflection is
+   worth half of the 0x2000 revolution. The turn is latched on the
+   press edge and added to, never integrated a frame at a time, which
+   is what stops the speed depending on the host's frame rate. Yaw
+   runs free and wraps; pitch stops at a quarter revolution, straight
+   down over the model, because past that the picture mirrors and the
+   yaw stops meaning anything.
+
+   A DRAG TURNS THE NEAR FACE WITH THE POINTER, and that is a
+   NEGATIVE yaw. The rotation carries a vertex in front of the pivot
+   the opposite way to one behind it, so the sign that moves a whole
+   scene right is the sign that turns a centred model left.
+
+   THE TURNTABLE STOPS WHEN A HAND IS PUT ON IT. An orbit that sticks
+   is pointless against a model that keeps turning out from under it,
+   so the first drag takes the spin over and the rest request gives
+   it back.
+
+   THE WHEEL IS A DOLLY, NOT A LENS. Each notch takes a fifth off the
+   distance, so the model closes on the camera and the perspective
+   opens up with it - what walking toward something does, and the
+   reason nothing of a backdrop needs to follow.
+
+   THE DISTANCE IS THE STATE, NOT THE NOTCH COUNT, and that is what
+   puts the limits in the right unit. Both stops are distances
+   measured off the model, and a count cannot express either, because
+   what a count is worth depends on the size of whatever has loaded.
+   A count clamped against the stops also keeps winding past one and
+   then hands that much back as dead travel on the way out. So the
+   part holds the distance, clamps it to the band on every step, and
+   works from the difference between the host's running count and the
+   one it last saw.
+
+   THE TWO STOPS, BOTH DERIVED:
+
+   o  Winding IN stops where the model's own front would reach
+      Scene_TransformProject's near plane, SHIP_NEAR_CLIP. Closer
+      than that and faces vanish into the camera one at a time.
+
+   o  Winding OUT stops where the depth would overflow the rotate.
+      This one is a LANDMINE, because it does not look like a limit
+      at all: Scene_TransformProject rotates against a 0x4000
+      amplitude table and shifts by 14, so a coordinate reaching
+      (1 << 31) / 0x4000 - that is 0x20000 - overflows the product
+      and reads back negative, every vertex falls behind the near
+      plane and the model disappears. Keep winding and the product
+      wraps a whole cycle of 0x40000 and the model REAPPEARS, larger
+      than it was, as though the zoom had gone round. The stop is
+      0x20000 less the model's radius, since the radius is what the
+      far side of the box adds to the depth.
+
+   THE OVERFLOW IS OURS, NOT THE DEMO'S. Nothing in RELIC comes near
+   it - its camera distances are small - so SHIP_DEPTH_MAX carries no
+   ORIGIN. It is a consequence of a viewer being allowed to stand
+   further back than any scene does.
+
+   THE FAR END IS THE TIGHTER ONE. Against a measured radius of 5488
+   the rest distance is 35123, the near stop 5688 and the far stop
+   125584, which is about eight notches in and six out [observed].
+   Filling more of the frame at rest trades one for the other.
+
+   A PART MUST UNDO WHAT THE PART BEFORE IT LEFT. The ship's claw
+   pose, claw texture, additive flag, flat scroll, billboard and
+   extras are module state in src/ship.c and each scene sets only the
+   ones it needs, so a part wanting the plain vessel cannot rely on
+   the defaults still being there. Ship_ResetPose restores all six.
+
+   WHAT IS STILL WRONG, AND IS THE DEMO'S OWN DOING: each object's
+   face order is sorted once when the geometry loads, so orbiting to
+   the far side of an object that is not convex can paint its back
+   faces over its front ones. Backface culling covers most of it. The
+   demo never had to care, because its camera never left one side.
+
+7.1.  Two things to look at, and the cycle that picks between them
+
+   THE PART HOLDS A LIST, NOT A MODEL. Tab or Enter walks it, shift
+   walks it backwards, and host.h's count is read as a DIFFERENCE
+   rather than as an index, because the count arrives already running
+   from whatever a host did with it elsewhere. The index is latched
+   on arrival, so the part always opens on the vessel however far the
+   count has wound.
+
+   EACH THING IS RESET AS IT COMES UP. A turn and a distance made on
+   the vessel mean nothing on the orb, whose dolly is a radius rather
+   than a distance, so the switch runs the same reset the middle
+   button does.
+
+   THE ORB NEEDS NO CAMERA AT ALL. Orb_DrawTexturedSphere takes a
+   screen place, a radius and two angles, so the drag goes straight
+   onto the angles and the wheel straight onto the radius - none of
+   section 7's measured framing applies to it, and none of the
+   overflow landmine either. Its rest radius is the vessel's framing
+   number, which puts both at 40 of the frame's 50 half-rows.
+
+   A REVOLUTION OF THE ORB IS 0x100, NOT 0x2000, and that is a trap
+   worth stating as a fact because nothing about the call says so.
+   Crack_DrawShells takes its angle and shifts it LEFT BY FIVE into
+   an ordinary 0x2000 angle, and Orb_DrawTexturedSphere applies the
+   other to the LOW BYTE of a texture coordinate; both therefore wrap
+   at 0x100. A drag handed straight over in the transform's units is
+   32 times too fine, and reads as the orb spinning eight times for
+   half a window of pointer travel. Shifting the deflection down by
+   the same five makes a drag across the window worth half a turn.
+
+   THE SPIN STOPS WHILE A HAND IS ON IT, as it does for the vessel -
+   an orbit that sticks is pointless against a thing that keeps
+   turning out from under it. THE CRACKS AND THE SHELLS CARRY ON,
+   because it is the pose a drag takes over and not the animation.
+
+   THE SIZE STOPS AT THE RELEASE'S OWN GATE. Scene_RenderRelease
+   drops Crack_DrawShells above a projected radius of 0x50 and the
+   rays go with it, so the viewer stays under that and keeps them.
+   This costs nothing: 0x50 is a RADIUS, so the orb may be the
+   frame's full width before they would cut out.
+
+   THE COOL-DOWN IS ONE ACCUMULATOR, WALKED BOTH WAYS. g_FlareGrow is
+   seeded at 0x7f00 and stepped down by 0x64 a tick through the
+   release, and Orb_DrawTexturedSphere's reveal is (it >> 8) >> 1 - a
+   floor on each texel's blue, so the sphere is sparse while the
+   number is high and solid at zero. Holding the key walks it back up
+   on the same step, which takes the orb apart at the speed the
+   release puts it together. Nothing is ramped at a rate of our own.
+
+   THE ORB IS OPTIONAL AND THE VESSEL IS NOT. Orb_Init wants Fcrust
+   and Fspacedata, so a run without relic.dat loses the orb and the
+   cycle has one thing in it. Failing the part instead would lose the
+   vessel too, which needs only the executable.
+
+7.2.  The ark's body, and measuring something with no bounds call
+
+   TWO VESSELS EXIST AND THEY ARE NOT VARIANTS. src/ship.c draws the
+   space vessel out of Fspacedata and seven parts use it; the temple,
+   the ark and the departure draw a different body entirely, an
+   image-resident object set behind src/objset.h. The viewer carries
+   both, and the ark's needs no relic.dat at all.
+
+   THE ARK'S AND THE TEMPLE'S ARE THE SAME MESH, stored twice and
+   byte-identical - objset.h. The temple's copy is halved in place
+   and the departure's is not, and the two sets name different glow
+   blobs, but the body is one body. The rising ship is not a
+   half-modelled stand-in for the flying one.
+
+   Temple_DrawObjectSet TAKES THE FIVE Ship_Draw TAKES, and its
+   projection subtracts the camera before it rotates exactly as
+   Scene_TransformProject does, so section 7's two rotations place
+   the eye unchanged and the orbit needs nothing new.
+
+   THERE IS NO Ship_Bounds FOR AN OBJECT SET, so the extent is
+   measured through the one public projection instead of being
+   chosen. A screen offset is (x << 8) / (depth + 0x1f4), so
+   projecting every vertex from a distance far enough that nothing
+   clips and inverting that gives the half-extent in object units.
+   It is taken over eight yaws and from the FRAME'S CENTRE, which is
+   where the set's origin lands: the widest yaw is the one that has
+   to fit, and a body sitting off its own origin is then already
+   counted. Section 7's rule survives into a part of the engine that
+   never offered it.
+
+   NEITHER OF THE VESSEL'S STOPS CARRIES OVER. The near one is the
+   set's own TE_OBJ_CLIP less the 0x1f4 the depth is biased by, not
+   SHIP_NEAR_CLIP. The far one does carry: obj_rot shifts by 14
+   against the same 0x4000 amplitude, so the same 0x20000 overflow
+   described in section 7 waits at the same distance.
+
+   THE THRUSTERS ARE NOT DRAWN HERE, and the set is copied and its
+   two glow addresses zeroed to say so rather than left to fail
+   quietly. They could not work as they stand: the temple's set sizes
+   its glows from part_temple's own tick, which nothing outside it
+   advances, and the ramp their colour comes from is built in that
+   module's init. A part reached without the temple having run would
+   draw them in black. Temple_SetGlowCounter drives only the
+   departure's style, whose set is private to src/part_return.c.
+
+7.3.  The city's two burns, which are not objects at all
+
+   THE FOURTH THING TO LOOK AT IS A PICTURE. Part 2.18's first shot
+   is a photograph of a city with a burn front crossing it, and
+   every routine behind it already lives in src/stills.h, shared
+   with the valley. The part needed NOTHING exported: the constants
+   are Farmdata offsets and the loader is fifteen lines, so not one
+   function was duplicated or made public for it.
+
+   FARMDATA IS SPLIT FOUR WAYS and only two parts decode - the
+   picture and the scorched layer. The height map and the 1BPP mask
+   are used where they lie, as pointers into the chunk.
+   effects/city.txt 3 holds the table.
+
+   THE RESTART IS THE SHOT'S OWN ENTRY. Stills_SetThreshold puts the
+   front back, the pool empties and the haze is reseeded - the same
+   sequence 0x0031460c runs once. Here a key runs it, and so does
+   arriving at the picture, so it always opens unburnt.
+
+   THE DRAG IS THE DEMO'S OWN SCROLL. Stills_SetScroll takes a row
+   offset, and 153 rows through a 100-row frame leaves EXACTLY 53 of
+   travel - which is the whole of what the demo uses too. The
+   pointer spans that range and rests halfway up it.
+
+   IT GOES NOWHERE SIDEWAYS, and that is data, not a decision: the
+   picture is 160 wide, which is the frame's own width, so there is
+   nothing at either edge to scroll into. A horizontal drag could
+   only wrap or show black, and section 2 does not allow either.
+
+   ONE HELD KEY, READ TWO WAYS. The orb eases on it as a STATE and
+   the city restarts on its EDGE, which is what a neutral boundary
+   buys: host.h still names nothing.
+
+   THE STREET SHOT IS THE SAME EFFECT AND NOT THE SAME LOOP. Shot
+   two's stills are baked into the image rather than the archive and
+   are FRAME SIZED, so it has no travel at all - and scrolling it
+   would be wrong rather than empty, because the 153-row buffer it
+   is padded into carries the AERIAL shot's bottom rows behind it.
+   It also hazes twice, once at double the threshold under the
+   debris and once straight over, where the aerial shot hazes only
+   after them.
+
+   SO ITS DRAG SCRUBS THE BURN INSTEAD. The value is the demo's own
+   threshold and the span is the one its loop covers, so the pointer
+   samples the shot rather than driving something invented; the
+   front is latched on the press and the step pauses while a hand is
+   on it, which is the turntable rule again.
+
+   A BURN STOPS WHERE ITS SHOT ENDS. Stills_StepThreshold floors at
+   zero, but each loop runs a fixed count and leaves the front well
+   above that - 110 after the aerial shot's 230 fields, 72 after the
+   street's 150. Running on would burn further than the demo ever
+   shows. Both end states are near-white, which is where the demo
+   leaves them before it cuts to its flash.
+
+7.4.  The temple takes the look too, because it is a raycaster
+
+   THE TEMPLE IS NOT A MESH. It is a voxel raycaster over a 64x64
+   grid, one column cast per screen x, and its camera is a position
+   plus TWO SCALARS: g_heading, a yaw in tenths of a degree, and
+   g_horizon, a row offset that serves as the pitch. Both come off
+   splines in Temple_EvalCameraSpline, which is where the look is
+   added - one place for every shot that casts terrain, the long
+   approach and the orb's charging alike.
+
+   NOTHING HAD TO BE TAUGHT TO TAKE A NEW VALUE. All 3600 headings
+   are planned at init, so a turn needs no rebuild, and the shake
+   already moves both angles every field during its phase.
+
+   BOTH SIGNS RUN AGAINST Space_Look's, and that is not an
+   inconsistency to tidy away. A rising heading and a rising horizon
+   turn the view the opposite way to that one's yaw and pitch, so
+   matching its signs would have the scene push away from the hand
+   where every other part carries the ground with it. The rule is
+   the FEEL, not the arithmetic.
+
+   TWO NUMBERS SET HOW FAR A FULL DRAG LOOKS, and nothing else does:
+   TE_LOOK_YAW in the heading's own tenths of a degree, 3600 to a
+   turn, and TE_LOOK_PITCH in frame rows out of TE_H.
+
+   THERE IS NO SKY AND SO NOTHING TO PROTECT. A ray that reaches its
+   last step without a hit leaves its column at the fog colour, a
+   flat grey, so looking anywhere unintended costs a grey frame and
+   never a broken one.
+
+   WHAT IS OUT THERE IS A VALLEY RINGED BY MOUNTAINS, fully
+   populated in every direction - the temple, a second structure and
+   ridges all round. It repays a look of about this size and tilted
+   down; further round, the ridges are silhouettes.
+
+   THE SHOT IS NOT RESOLUTION-PARAMETRIC, and that is the real limit
+   on it. The module renders into its own 160x100 buffer and the
+   frame is filled from it by nearest neighbour, so a look here
+   stays at the demo's own resolution where a space scene's sharpens
+   with the window. Section 20's rule stops at this module's edge.
+
+7.5.  Flying the temple's ground, with a camera it never had
+
+   THE CAST COMES OUT WHOLE, BEHIND THREE CALLS. draw_terrain reads
+   five globals and writes the module's own buffer, so a terrain-only
+   init, a draw that stages those five, and a heading-to-step helper
+   are the entire surface - objset.h. Everything else of that module
+   stays where it is.
+
+   THE INIT HAD TO BE SPLIT, AND THAT IS NOT TIDINESS. te_init ends
+   by selecting the temple's object set, and the credits holds a set
+   of its own with the thrusters off; wrapping the whole of it would
+   have given the ark its thrusters back, silently, depending on
+   which part initialised last. The terrain half touches no set.
+
+   THE CAMERA IS OURS AND IS SAID TO BE. The demo flies this ground
+   on a spline and never freely, so there is nothing to be faithful
+   to: the view turns while the pointer is down and walks while the
+   key is, and stops dead on either. No physics, because none is
+   being reproduced.
+
+   LOOKING NEVER STEERS THE WALK, AND THAT IS THE MODULE'S DOING.
+   g_heading is a bearing and g_horizon only a screen row, so the
+   two are independent and forward is defined at any pitch, straight
+   down included. The degeneracy a look-vector camera suffers at the
+   poles cannot arise here, so the pitch is clamped for the view's
+   sake and never for the walk's. The walk is therefore flat by
+   construction - it reads the heading alone - and height belongs to
+   the wheel, stepped LINEARLY where the other characters' dollies
+   are ratios, because a ratio keeps a dolly even in apparent size
+   and a height has no such property.
+
+   THE CLAMP IS ASYMMETRIC because its two ends are not worth the
+   same: down is terrain and up is the fog colour and nothing else.
+
+   THE TWO WALK KEYS ARE ONE SIGNED STEP, forward and back along the
+   same bearing, so holding both is a stand rather than a race
+   between them. Backing up is what makes a bearing-only camera
+   usable: with no strafe, the alternative to a step back is half a
+   turn and a step forward, and then another half turn to face what
+   was being looked at.
+
+   EVERY RATE HERE IS OURS, which section 7 allows for a viewer's
+   framing, and none of them stands in for something readable.
+
+   NEITHER OF ITS TWO RANGES DEPENDS ON THE WINDOW. The gesture
+   arrives as a 16.16 fraction of the window's half size and the
+   horizon is in the module's own fixed 100 rows, so both ends are
+   normalised and a resize changes nothing. The property that makes
+   this module awkward - that it renders at 160x100 and is scaled up
+   - is what makes its look window-independent.
+
+   WHERE IT OPENS IS A POINT ON THE DEMO'S OWN TRACK, chosen rather
+   than computed, because the track's start faces unlit ground a few
+   units away. The pose is the demo's; which moment of it is ours.
+
+   FLYING OFF THE GRID IS CLAMPED, not undefined - a ray off the map
+   holds at the edge cell - and flying UNDER it hits the cast's own
+   branch and fills the frame with one dark red. Both are the demo's
+   handling, not a guard of ours.
+
+8.  Open questions
+
+   o How much of the demo's blocking structure survives translation
+     to a state machine before it stops resembling the original?
+     Space_RunPart is one long straight-line sequence of waits and
+     that shape is worth keeping if it can be.
+   o Does a higher-precision light channel want more than 6 bits?
+     Ham8_BuildTables quantises to 0x3f because the chipset does;
+     carrying 8 or 16 and quantising at the end is allowed by
+     section 2 but has not been tried.
+   o Nothing has been decided about how the viewer will present
+     parts that are shaped but not lit, beyond a status flag.
+   o Jumping straight to the ark draws its thrusters in black, since
+     the glow ramp is built in the temple's init and the ark's does
+     not call it - section 7.2. Harmless in a run from the start.
+   o Has the released orb's colour been put against hardware?
+     src/part_release.c and src/part_credits.c draw the same hue from
+     the same texture, so they agree with each other, and neither has
+     been compared with a capture - section 7.1.

@@ -1,0 +1,115 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                   THE EMBEDDED IFF TDDD 3D OBJECT
+
+
+Abstract
+
+   One IFF FORM TDDD object - the Imagine / Turbo Silver 3D format -
+   is linked into the executable at image 0x002e1bc8, file 0x0c2904.
+   It carries the crack network that Crack_DrawShells draws over the
+   orb in the release scene.
+
+   THE DEMO DOES NOT PARSE IFF. Crack_LoadGeometry scans forward a
+   byte at a time for the literal tags 'PNTS' and 'EDGE' and ignores
+   every other chunk, so the surrounding form is the modeller's, not
+   the demo's.
+
+   This is the only TDDD object found so far. Everything else
+   geometric in RELIC is built by code or comes out of relic.dat -
+   see formats/relic_dat.txt.
+
+Table of Contents
+
+   1. The Chunks That Are There
+   2. What The Demo Reads
+   3. The Authored Data
+   4. Open questions
+
+1.  The Chunks That Are There
+
+   A standard IFF walk from file 0x0c2904 [verified]:
+
+       off       tag     length   note
+       0x0c2904  FORM    0x712
+       0x0c290c  TDDD             the form type
+       0x0c2910  OBJ             (written "OBJ ")
+       0x0c2918  DESC    0x6f6
+       0x0c2920  NAME    0x12
+       0x0c2928  AXIS    0x00
+       0x0c293a  SHAP    0x04
+       0x0c2946  POSI    0x0c
+       0x0c295a  AXIS    0x24
+       0x0c2986  SIZE    0x0c
+       0x0c299a  PNTS    0x4ca     <- read
+       0x0c2e6c  EDGE    0x162     <- read
+       0x0c2fd6  COLR    0x04
+       0x0c2fe2  REFL    0x04
+       0x0c2fee  TRAN    0x04
+       0x0c3016  TOBJ    0x00
+
+   PNTS's payload ends exactly where EDGE begins, which is the check
+   that the lengths are being read correctly.
+
+2.  What The Demo Reads
+
+   CRACK_LOADGEOMETRY SCANS, IT DOES NOT WALK [verified, 0x002cc244]:
+
+       A0 = 0x002e1bc8
+       while longword at A0 != 'PNTS': A0 += 1     <- a BYTE step
+       A0 += 8                                      tag and length
+
+   So it lands on the chunk's payload by skipping the eight bytes of
+   tag and length, which happens to be a correct IFF skip - but it got
+   there by brute force and would find the four characters anywhere.
+
+   PNTS is a count word then that many points of three big-endian
+   16.16 longwords. EDGE is a count word then that many index pairs of
+   two words each.
+
+       102 points, stored as g_CrackVertCount = 101 - ONE LESS, because
+                   the loader subtracts before storing and the draw
+                   loop uses it as a dbf counter
+        88 edges
+
+3.  The Authored Data
+
+   EVERY POINT HAS Z = 0 AND NO FRACTIONAL PART [verified]. The
+   object is a flat sketch on an integer grid, x running 0 to 126 and
+   y running 2 to 128, and the sphere is made at load time:
+
+       lon = (x >> 16) << 6
+       lat = 0x4000 - (y >> 8)
+       out = ( (sin(lon) * c) >> 8, (cos(lon) * c) >> 8, lat >> 1 )
+       where c = cos(((lat >> 8) << 5) & 0x1fff) >> 7
+
+   SO X AND Y ARE LONGITUDE AND LATITUDE, and the third component
+   stored is the LATITUDE ANGLE ITSELF rather than its sine - which is
+   why every third longword in g_CrackVerts reads as a round 0xNN00.
+
+   g_SinTable is 8192 longwords of amplitude 0x4000 and the cosine
+   table is the same table 2048 longwords along.
+
+   VERIFIED AGAINST MEMORY: the authored point (8, 2) comes out as
+   (146, 354, 7936), which is what g_CrackVerts holds at run time
+   [observed, on hardware]. Transcribing the arithmetic above against
+   the file reproduces the live array.
+
+   EVERY EDGE CROSSES BETWEEN TWO GROUPS: all 88 join a point below
+   index 58 to one at or above it, none joins within a group. The
+   radius in the xy plane runs 0 to 0x2000, zero being a point at a
+   pole.
+
+4.  Open questions
+
+   -  WHETHER THE DEMO LINKS THE WHOLE MODELLER FILE OR A TRIMMED ONE.
+      The form is 0x712 bytes and the two chunks read account for
+      0x62c of it, so the rest is paid for and unused.
+
+   -  WHAT THE 58 / 44 SPLIT MEANS. Every edge crosses it, so the two
+      groups are presumably the two sides of each crack, but nothing
+      has been rendered to confirm that.
+
+   -  Whether any other TDDD object is linked in. Only this one has
+      been looked for.

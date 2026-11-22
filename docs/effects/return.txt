@@ -1,0 +1,955 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                           THE RETURN FLIGHT
+
+
+Abstract
+
+   The flight back off the planet: the ship departing with the planet
+   edge behind it, then the run at the portal. It is the space
+   engine's work, not the temple's, and it runs BETWEEN the temple
+   module's two calls.
+
+Table of Contents
+
+   1. Where It Sits
+   2. The Sequence
+      2.1. What The Departure Shot Draws
+      2.2. Where The Panorama Comes From
+      2.3. The Portal Run
+         2.3.1. The Burst
+         2.3.2. The Particles
+         2.3.3. The Wavefront, And What Is Not Yet Read
+      2.4. The Ship Is The Temple's
+         2.4.1. The Two Sort Biases
+      2.5. The Thrusters
+   3. What It Stages
+      3.1. What Moves It
+         3.1.1. Which Counters Anchor A Frame
+      3.2. The Rays Turn
+      3.3. The Light Base
+   4. What Is Already Ours
+      4.1. Coming Into It
+      4.2. The Ship Goes, And The Screen Ripples
+         4.2.1. The One Routine That Is New
+         4.2.2. Where The Readings Sit
+   5. The Reconstruction
+   6. Open questions
+
+1.  Where It Sits
+
+   SpaceModule_Run 0x002c8234 takes a selector in D0 and keeps it at
+   0x002e0af8, the same shape Temple_RunShot3 uses: 0 is the opening
+   space scenes and 1 is the return flight. Demo_RunAct2 runs them
+
+       0x0021f872   TempleModule_Run   D0 = 0
+       0x0021f884   SpaceModule_Run    D0 = 1    <- this
+       0x0021f8b8   TempleModule_Run
+
+   so THE TEMPLE MODULE RUNS TWICE and this sits between them
+   [verified]. The reconstruction's parts end at the first temple
+   call; both this and the second temple run are untranscribed.
+
+2.  The Sequence
+
+   IT OPENS ON THE TEMPLE'S BLANK SCREEN. SpaceModule_Run's mode 1
+   arms (0x1f,0x30) at 0x002c8264 and WAITS on it at 0x002c826a
+   before it stages anything [verified], and the temple module left
+   a copper list up that fetches no bitplane - effects/temple.txt
+   11.9. The wait is about 21 fields and the build after it about
+   21 more, with Space_DisplayOn 0x002d542e ending the blank
+   [observed]. So the scene's counters start 42 fields after the cue
+   that ended the temple.
+
+   Space_RunReturn 0x002c8ddc runs three things in order:
+
+       Space_RunDeparture  0x002c8e58   the ship leaving
+       Space_HalveBuffer   0x002c918c   the fade between
+       Space_RunPortalRun  0x002c8f76   the run at the portal
+
+   Space_HalveBuffer walks g_pRingTexture, masks 0xfcfcfcfc and
+   shifts down two, so every channel is quartered in place - the
+   same shape as Temple_HalveWarpTex but two bits rather than one,
+   over longwords rather than bytes, and ON THE PORTAL RING'S OWN
+   TEXTURE rather than on a frame.
+
+   Space_RunDeparture builds the flare ghosts and the saturation
+   ramp, calls Scene_SetupPart14, then Ham8_BuildTables with
+   0x3f, 0x3f, 0x5f - the same base the temple's mode 0/1 uses - and
+   runs Space_StepDeparture 0x002c9272, which latches a camera the
+   way every other shot in this corpus does.
+
+2.1.  What The Departure Shot Draws
+
+   THE PLANET EDGE IS A SCROLLING PANORAMA, NOT GEOMETRY.
+   Space_BlitPanorama 0x002c989e copies a 160 by 100 window out of
+   g_pPanorama into g_pFrameBuffer, 0xa0 longwords a row for 0x64
+   rows, stepping the SOURCE on by 0x780 bytes past each row - so
+   the source is 640 pixels wide and the window slides along it.
+
+   The offset is g_PanoramaScrollX, which Space_StepDeparture sets
+   from the camera as
+
+       g_PanoramaScrollX = (-g_CameraYaw) >> 2 + 0xc8
+
+   NEGATE THEN SHIFT, not the other way round [verified, 0x002c92be]:
+   asr floors, so the two spellings differ by one for every odd yaw.
+   Turning the camera pans the backdrop and nothing is projected for
+   it at all.
+
+   THE WINDOW RUNS OFF EACH ROW AND INTO THE NEXT, and that is the
+   backdrop for the last third of the shot. Camera_AimAhead keeps
+   turning the yaw, so the scroll passes 0x1e0 - the last window a
+   640-wide panorama holds whole - about two thirds of the way
+   through. The source index is LINEAR: a row's 160 pixels simply
+   continue into row y+1, which is still inside the buffer.
+
+   CLAMPING IT PER ROW FREEZES THE BACKDROP: the stars stop dead at
+   the tick the scroll reaches 0x1e0 and never move again, which
+   looks like a camera fault at a cardinal heading and is arithmetic
+   [observed]. Only the last rows truly overrun the 0x3e800
+   allocation, and there the demo reads its pool - row 99 at tick 492
+   holds blues of 82, 90 and 107 against the frame's usual 4 to 14,
+   which RESOLVES TO A BRIGHT BLUE DASHED LINE along the bottom of
+   the demo's own picture [observed]. That is not reproducible;
+   part_return.c wraps the index back into the buffer, so the row
+   carries ordinary sky and reads continuous with the one above it.
+
+   IT MUST WRITE SOMETHING, AND NOT BLACK. Nothing clears the frame,
+   so leaving those pixels keeps the PREVIOUS tick's ship in them and
+   the hull drags across the bottom row. Blacking them instead trades
+   that for a dark line the demo does not have - its row is brighter
+   than the sky, not darker.
+
+   THE PLANET IS WIPED OUT OF THE PANORAMA BEFORE THE WRAP BEGINS,
+   and without that it scrolls into view a second time.
+   Space_ResetPanoramaToSky 0x002d2ed2 is Space_BuildPanorama's first
+   pass run again over the same buffer - 100 rows of 640 from the
+   tiled sky, NO Fearth stamp and NO limb glow. Space_RunDeparture
+   calls it once, on the way out of its first loop, at the moment the
+   scroll reaches 0x12c [verified, 0x002c8eac].
+
+   0x12c IS WELL BEFORE 0x1e0, so by the time a row's window starts
+   running into the next row the buffer is already plain sky. Read
+   out of the running demo at tick 347 the panorama is dark starfield
+   across every column of rows 1 and 40, with no trace of the Earth
+   that was there at tick 52 [observed].
+
+   THE SUN IS A TEXTURED SPHERE, NOT A BLOB. Space_DrawSunBlob
+   0x002d20fa is Orb_DrawTexturedSphere's skeleton - the same
+   g_SphereChordAngle and g_SphereNormalTable at the same 0x10100
+   bias - with a different fetch: it samples g_pRingTexture at
+   +0x20200 twice, one ang_a step apart, and writes the SUM into byte
+   +2 alone with an add.b that wraps rather than saturating.
+
+   Its two angles are g_SunAngleB, a byte the step sets to 0x5a, and
+   g_SceneAngleALatched >> 2, which mode 1 turns one a tick. So the
+   sun turns in the LIGHT plane, and Space_HalveBuffer's quartering
+   of that same texture - g_pRingTexture is Fplasma, effects/
+   explosion.txt 3 - is what dims it between the two shots.
+
+   The step calls it at radius 0x7f, x of 0x70 less the scroll and y
+   of -0x24, so most of the sphere is above the top of the frame.
+
+   SPACE_DRAWSUNFLARE DRAWS ONE FRAME IN EIGHT. Its first Math_Rand
+   is a gate rather than a jitter [verified, 0x002cdff0], and all
+   three of x, y and radius are then jittered, so it reads as a
+   flicker beside the sun rather than a halo on it.
+
+   THE WHOLE STEP, IN ORDER, IS SHORT:
+
+       latch the camera, and g_PanoramaScrollX from the yaw
+       Space_BlitPanorama      the planet edge
+       Space_DrawSunBlob       radius 0x7f
+       Space_DrawSunFlare      the ghosts
+       Draw_Flare              0x002d4452, at g_FlareScreenX
+       Portal_DrawGlow         0x002cd642, at g_PortalGlowX
+       Scene_SortAndDrawAll    0x002d28ca - THE SHIP
+       Flare_Draw              0x002cf2aa
+
+   g_FlareScreenX is 0x12c less the scroll and g_PortalGlowX is the
+   scroll less 0x3b6, so BOTH TRACK THE PANORAMA - everything in the
+   shot except the ship is pinned to the backdrop and slides with
+   it.
+
+2.2.  Where The Panorama Comes From
+
+   Space_BuildPanorama 0x002d2f02 fills it, once, from
+   Space_RunDeparture.
+
+   IT IS ALLOCATED, NOT BAKED. The allocator's tables are (flag,
+   pointer, size) THREES, and the panorama's is at 0x002f11ac -
+   g_pPanorama is the pointer slot and the size beside it reads
+   0x3e800, which is 640 x 100 x 4 exactly [observed, on hardware].
+   There is no lea of g_pPanorama anywhere in the image; the only
+   way to find the entry is the triple.
+
+   THE SOURCE IS 256 WIDE AND IS TILED. The fill walks 640 columns
+   but indexes g_pSkyTexture at (row << 8) | col with col taken as a
+   BYTE, so the 256-wide sky repeats two and a half times across the
+   output and the scroll can never run off the end of it.
+
+   g_pEarthOverlay is then composited over it, 240 columns by 92
+   rows, skipping zero longwords. It is the Fearth chunk, which
+   Earth_BuildTexture stamps on the planet the same way - effects/
+   earth.txt 2. THAT IS THE PLANET EDGE: a flat overlay on a tiled
+   sky, with nothing projected and no geometry involved.
+
+   A THIRD PASS ADDS THE LIMB GLOW, and it is the same one
+   Earth_BuildTexture bakes into the planet: 100 rows of 250 from
+   column 3, |Isqrt(x*x + y*y) - 0x41a| doubled and capped, read out
+   of g_HaloRamp with every channel halved. Being an absolute
+   difference it peaks ON a circle, so it is the blue rim at the edge
+   rather than a wash over the disc.
+
+2.3.  The Portal Run
+
+   THE RUN IS THREE PHASES, not one [verified, Space_RunPortalRun]:
+
+       mode 3   the swirl        fuse 0x258, tables at 0, 0, 0
+                Space_FillWhite 0x3f3f003f, ONE frame
+                tables rebuilt at 0x5f, 0x4f, 0x3f
+       mode 4   the burst        fuse 0x1f4
+
+   the same white-frame hinge the departure's ending uses. BOTH
+   LOOPS END ON A MUSIC CUE and the fuse only sets the quit flag as
+   a backstop, so neither count is the length.
+
+   THE SWIRL IS BLACK BECAUSE OF THE TABLES. Ham8_BuildTables runs
+   with 0, 0, 0 where the departure uses 0x3f, 0x3f, 0x5f, so a
+   LIGHT-only pixel goes DARK here rather than pale - the opposite
+   end of the same dial the temple's fog base sits on. Nothing draws
+   a swirl; the portal's own glow resolves black.
+
+   It sets g_SceneMode to 3, parks the camera square - g_CameraYaw
+   and g_CameraPitch both zero - puts the planet at (-0x1f4, 0x96),
+   the horizon at 0x9300 and a fuse of 0x258 ticks.
+
+   THIS IS NOT PART 2.4's PORTAL. part_portal.c transcribes
+   Space_DrawApproachFrame, the white flash the OPENING's portal
+   blooms out of, reached from maybe_Space_RunPlanetScenes. The
+   return's run is its own path and shares no code with it, even
+   though it is the same portal on screen.
+
+   Space_StepPortalRun 0x002c9378 is a frame:
+
+       Scene_DrawTexturedSky    0x002d2db2   part_sun.c
+       Draw_Flare               0x002d4452   gfx.c
+       Space_DrawLightBlob      0x002d4780
+       Space_DrawPortalSparks   0x002c970c
+       Scene_DrawPlanetAndHalo  0x002ceaf8   space.c
+       Space_BlitPortalSprite   0x002c8944
+       Space_DrawPlanetMasked   0x002c97b8
+
+   THE FLARE OPENS ON A COMPLEMENT. Its radius is g_PortalOpen EOR
+   0x7f capped at 0x46, plus Math_Rand(0xa) - so as the counter
+   climbs the flare SHRINKS, and the jitter keeps it alive. The same
+   counter goes straight through as the next draw's radius,
+   uncomplemented, so the two move opposite ways as the portal
+   opens.
+
+   Space_DrawLightBlob is the blob again - the same bounds as
+   Space_DrawSunBlob and Temple_DrawGlowBlob - but it reads
+   g_LightSatLut rather than a colour ramp, so it SATURATES LIGHT
+   where those add colour. It takes the uncomplemented g_PortalOpen
+   as its radius.
+
+   Space_DrawPortalSparks places amber sparks around the mouth, all
+   three of position and size from Math_Rand:
+
+       x = Rand(0x1e) + 0x55
+       y = Rand(0xa) + 0x23
+       r = (Rand(0x46) + 0x1e) * g_PortalOpen >> 7
+
+   so THE SPARKS GROW WITH THE PORTAL rather than merely appearing
+   with it.
+
+   Space_BlitPortalSprite is a 35 by 29 baked sprite from
+   g_PortalSprite at a byte offset in D0 - the run passes 0x7d50,
+   column 20 of row 50 - a zero longword meaning leave what is
+   there, the same shape as the temple's foreground overlay.
+
+   Space_DrawPlanetMasked projects through Scene_ProjectPlanet,
+   which part_explosion.c already carries, and clips a 0x3f-wide run
+   against g_pPlanetMask: the planet's silhouette put in front of
+   what is behind it.
+
+   SO THE SWIRL NEEDS FOUR NEW ROUTINES and reuses three. All four
+   are written: Gfx_GlowEllipse and Gfx_GlowBlobSub in gfx.c,
+   Space_BlitPortalSprite and Space_DrawPlanetMasked in space.c.
+
+   THE SWIRL ITSELF IS Space_DrawLightBlob 0x002d4780, and it is a
+   glow blob with two things done to it. It is an ELLIPSE - the
+   vertical half-extent is the radius shifted down one and the row
+   index steps 0x200 rather than 0x100 - and ITS FALLOFF IS WARPED
+   BY TWO SAMPLES of a 1024-word table, one taken at the distance
+   and one at the distance plus a QUARTER OF THE ANGLE. Folding the
+   angle in is what curves it into a swirl rather than a ring.
+
+   The two table offsets scroll at different rates, one backwards
+   every four ticks and one forwards every eight [verified,
+   0x002d5ae4 and 0x002d5b10], so it turns. The table is
+   Gfx_BuildTurbulence's: two sines at different rates plus a random
+   term, seeded from g_SinTable.
+
+   WITHOUT THAT TABLE THE SWIRL IS A PLAIN ELLIPSE. It is shared
+   with part 2.9, which is where Gfx_BuildTurbulence was already
+   called from; a part that does not build it gets a g_turb full of
+   zeros, both samples modulate nothing, and the result is a smooth
+   featureless blob with no arms and no sign of why. Building it
+   took the LIGHT channel from 3.71 to 2.38 against hardware
+   [observed].
+
+   THE ARMS CANNOT BE MADE TO LINE UP. Part of the table is a random
+   term off the demo's own Math_Rand stream, so the phase of the
+   banding is whatever that stream had reached - the same reason
+   g_SceneAngleA cannot be matched, section 3.1.1. The character of
+   the spiral matches; the position of a given arm does not.
+
+   AND THE PLANET IS SWALLOWED BY LIGHT, not by anything drawn over
+   it. Space_DrawPlanetMasked writes LIGHT outright - it does not
+   add - to g_PortalOpen >> 1 wherever g_pPlanetMask is set, nine
+   rows below the projected planet. With the tables at 0, 0, 0 a
+   high LIGHT resolves black, so the disc darkens as the portal
+   opens.
+
+   SPACE_DRAWPLANETANDHALO TAKES SCREEN COORDINATES, not the world
+   point - the shot stages g_PlanetWorldX/Z at -0x1f4 and 0x96 and
+   those must go through Space_Project first. Handing it the world
+   pair draws the planet off screen and leaves only the mask's flat
+   disc, which looks like a planet with no texture.
+
+2.3.1.  The Burst
+
+   Space_StepPortalBurst 0x002c943c is mode 4's frame, and only
+   three of its eight calls are new:
+
+       Scene_DrawTexturedSky    part_sun.c
+       Space_DrawSunBlob        at (0x64,0x28), radius
+                                (g_BurstGrow >> 5) + 0xf
+       Burst_DrawParticles      0x002c9526   NEW
+       Draw_Flare               radius (g_BurstGrow >> 4) + 0x28
+                                + Rand(0x14)
+       Scene_DrawPlanetAndHalo  space.c
+       Space_BlitPortalSprite   the same 0x7d50 sprite
+       Burst_DrawWavefront      0x002c9650   NEW
+       Draw_FlareBand           0x002d25f8   NEW
+
+   EVERYTHING GROWS FROM ONE COUNTER. g_BurstGrow 0x002e0a96 is
+   staged to 0xa0 and turned one a tick by mode 4; the sun blob's
+   radius and the flare's are both shifts of it. The blast is one
+   number driving routines we already have.
+
+   THE SUN BLOB IS REUSED WITH g_SunAngleB FORCED TO ZERO where the
+   departure passes 0x5a, so the sphere does not counter-rotate.
+
+2.3.2.  The Particles
+
+   3000 of them, 20 bytes each at g_BurstParticles 0x002fcef4:
+   position as two 16.16 longs, velocity as two more, and a
+   brightness counter at +0x10.
+
+   Burst_SeedParticles 0x002c91aa lays them on a disc about
+   (0x64, 0x28) - the same centre as the flare and the blob - taking
+   an angle from g_SinTable at Rand(0x2000) and a radius of
+   Rand(0x100) + 8. The velocity is the offset from the centre
+   shifted down seven, jittered by Rand(0xc350) - 0x61a8 on each
+   axis and scaled by 0x4a/256, so A PARTICLE'S SPEED IS ITS
+   DISTANCE: the disc expands rather than scattering.
+
+   Burst_StepParticles 0x002c9500 is the whole of the motion - two
+   adds a particle, called from mode 4's VBL block.
+
+   Burst_DrawParticles 0x002c9526 plots them, adding the LOW NIBBLE
+   of the brightness counter to LIGHT with a byte add that wraps,
+   then advancing that counter by 0xd. The nibble cycles, so each
+   particle twinkles rather than fading.
+
+2.3.3.  The Wavefront, And What Is Not Yet Read
+
+   Burst_DrawWavefront 0x002c9650 walks 160 x 98 pixels and does two
+   things per pixel: it adds a per-pixel byte from g_BurstLightMap
+   into LIGHT through g_LightSatLut, and where a second per-pixel
+   byte from g_BurstFrontMap exceeds g_BurstFront >> 2 it adds a
+   longword from g_BurstFrontRamp to the whole pixel. g_BurstFront
+   0x002c9708 is staged to 0x35c and falls one a tick, so THE FRONT
+   IS A THRESHOLD SWEEPING DOWN A BAKED HEIGHT MAP.
+
+   While g_BurstDecay 0x002c970a is still running - 0x20 of them -
+   the light map is also decayed in place through the same LUT.
+
+   TWO CLOCKS, AND THEY ARE NOT THE SAME ONE. g_BurstFront and
+   g_BurstGrow are stepped by the VBL hook's mode 4 block at
+   0x002d5b44, once per field. g_BurstDecay is stepped inside
+   Burst_DrawWavefront, once per DRAW, and so is the decay it
+   gates. The burst's frame is the most expensive in the scene and
+   the demo does not hold a field rate through it: about 0.67 draws
+   a field once the one-off setup - the map rebuild, the
+   3000-particle seed and Space_FillWhite - is behind it
+   [observed], so its 0x20 decays take about 48 fields.
+
+   THE PORT RUNS BOTH IN step(), WHICH IS A DELIBERATE DIVERGENCE.
+   Splitting them - the counter per tick, the decay per draw - is
+   what a host that steps more often than it draws will do with the
+   demo's arrangement, and it leaves the decay unfinished while the
+   counter expires: the light map stays at its full 0x30 to 0x3f
+   and the blast comes out at TWICE its light. Measured against
+   hardware 125 fields in, the LIGHT channel was 56.8 of 63
+   against the demo's 27.0, an error of 29.9 [observed]; with both
+   clocks in step() it is 1.70.
+
+   What the divergence costs is the first 48 fields, where the
+   demo's map is still coming down and ours has finished at 32. The
+   end state is identical, and it is the end state that the rest of
+   the scene is drawn against.
+
+   ITS LOW BYTE IS THE SOURCE'S LOWEST, NOT ITS SECOND. lsr.w #8
+   acts on the low word, where B0 sits in the high half, so the
+   result's last byte is v & 0xff. Reading it as (v >> 8) & 0xff
+   picks up B1 and puts the wrong channel in B - worth 3.30 against
+   2.89 here [observed], and more in the stills module where the
+   same three instructions decode a palette.
+
+   The ramp cannot brighten LIGHT. Burst_MakeFrontRamp's lsl.l #8
+   followed by lsr.w #8 rewrites each source longword B3.B2.B1.B0
+   as B2.B1.00.B0, so BYTE +2 OF EVERY RAMP ENTRY IS ZERO and the
+   add.l leaves the LIGHT byte alone; the andi.l #0xfcfcfcfc before
+   the lsr.l #2 is what stops a byte's low bits carrying into its
+   neighbour. A reconstruction that adds the ramp across all four
+   channels puts an over-range ring round the blast.
+
+   EVERY TABLE IT READS IS BAKED IN THE EXECUTABLE. Nothing
+   generates them and nothing in the image so much as names
+   g_BurstFrontMap - a byte search finds its address only in the two
+   reads above - because they are simply data.
+
+       g_BurstMaskBits    0x002f9074, a 1BPP 160 x 100 silhouette:
+                          100 rows of 20 bytes, 687 of its 2000
+                          non-zero, the first at row 19
+       g_BurstFrontMap    0x0030b954, 16000 bytes
+       g_BurstFrontRampSrc 0x0030f7d4, 256 longwords
+
+   SAMPLING A MAP AT ITS BASE SAYS NOTHING. The first fifty rows of
+   g_BurstFrontMap are zero and so are the first nineteen of the
+   mask, so four longwords off the front of either reads empty and
+   looks generated. Both match the running demo byte for byte as
+   early as the temple scene [observed].
+
+   THE MAP IS BUILT 160 x 100 AND SWEPT 160 x 98. Burst_BuildMaps
+   fills 16000 cells - 100 rows of 20 bytes of 8 bits - Burst_BlurMap
+   runs 15680 from one row in, so it writes cells 160 to 15839, and
+   Burst_DrawWavefront sweeps 0 to 15679. Building only what the
+   sweep reads leaves the last two rows zero and the two above them
+   blurred against zero.
+
+   The blur's first cell reads its own index less 0xa1, which is -1.
+   The demo reads the byte in front of a static buffer; a
+   reconstruction reading in front of a heap block wants a LEADING
+   GUARD ROW instead.
+
+   So the only work is reading them:
+
+       Burst_BuildMaps 0x002c9588     mask -> g_BurstLightMap, a set
+                                      bit 0x30 and a clear one 0x3f,
+                                      then Burst_BlurMap twice
+                                      through g_BurstBlurScratch,
+                                      then g_pPlanetMask punched in
+                                      at +0x1190 so the front does
+                                      not cross the planet
+       Burst_BlurMap 0x002c960c       nine taps, the centre a half,
+                                      each edge an eighth and each
+                                      corner a thirty-second
+       Burst_MakeFrontRamp 0x002c9166 the ramp source shifted and
+                                      masked into g_BurstFrontRamp
+
+   Draw_FlareBand 0x002d25f8 lays ten rows about g_BandRow. Each
+   pixel is keyed on a polar distance taken on a SQUASHED grid -
+   the column halved and the row stepping 0x14 of the table per
+   screen row - so the shape is a wide flat ellipse and not a disc.
+   The blend at 0x002d3d72 adds one scalar to R, G and B, each
+   saturating at 0x3f, and leaves LIGHT alone.
+
+2.4.  The Ship Is The Temple's
+
+   SCENE_SETUPPART14 0x002d0146 REBUILDS g_SceneObjects FROM SCRATCH
+   and nothing of Space_BuildObjects' vessel survives it, so the
+   departure does NOT draw the ship of the opening scenes. That is
+   why the staging sets g_SceneObjectCount to 0xe: fifteen slots,
+   thirteen meshes and two glows.
+
+   THE GEOMETRY IS THE SAME BYTES AS CODE_06'S. Objects 0 to 12 are
+   byte-identical to Temple_BuildObjects' first thirteen - every
+   block size matches and the vertex data compares equal [verified].
+   The two hunks hold one ship twice:
+
+       temple 0x003d5e00 ... 0x003d7cce   src/part_temple.c TE_OBJ
+       here   0x002e26e2 ... 0x002e45b0
+
+   BOTH COPIES ARE HALVED IN PLACE. Mesh_HalveVerts 0x002cfefe is
+   CODE_03's copy of Temple_HalveVerts, the same loop without the
+   one-shot guard, and Scene_SetupPart14 calls it once per object. At
+   run time the live vertex block reads exactly half the file's
+   values [observed, on hardware].
+
+   IT SITS WHERE AN ENVELOPE BUILDER WOULD. Between
+   Uv_GenerateFaceParams and Obj_SetCentroid in every build, which is
+   Mesh_MakeAdditiveEnvelope's place in the other builders; taking it
+   for one puts the ship on screen at twice size.
+
+   The UV passes match too, with three exceptions:
+
+       object 10   texture 0x24fae2, D2 0xb2, against the temple's
+                   0x23a1ca and 0x4e
+       object 11   D2 0x100 against 0xf0
+       object 12   the same mirrored
+
+   and the temple's FOURTEENTH object, the foreground temple on the
+   hull, has no counterpart here.
+
+2.4.1.  The Two Sort Biases
+
+   OBJECTS 11 AND 12 CARRY +/-0xb71b0 ON COMPONENT 0, written to the
+   slot's +0x18 after Obj_SetCentroid [verified, 0x002d0772 and
+   0x002d0808]. THAT IS A SORT BIAS AND NOT A MOVE: a mesh's vertices
+   carry their own placement, so +0x18 is read only to compute the
+   key at +0x24.
+
+   0xb71b0 IS 750,000, which dwarfs every real centroid, so the two
+   are forced to the far and near ends of the painter's order. Read
+   out of the running demo at tick 280 the sorted list runs
+
+       slot 11   key  38459     drawn first
+       slot 14   key  17125     the far glow
+       ... the eleven other meshes, +3320 down to -3712 ...
+       slot 13   key -16664     the near glow
+       slot 12   key -38899     drawn LAST
+
+   so OBJECT 12 IS PAINTED OVER THE NEAR GLOW and the hull occludes
+   the thruster. Without the bias that glow sorts last, the plume
+   paints over the fenders, and the frame is brighter everywhere the
+   hull should have cut it - LIGHT scored 1.94 against the demo with
+   the bias missing and 0.48 with it [observed].
+
+   THE TWO RENDERERS ARE ONE ROUTINE IN TWO HUNKS. The temple's
+   object projection and CODE_03's Scene_TransformProject agree in
+   every constant - the >> 4, the 0x1f4 added before the divide, the
+   0xc8 near clip and the 0x50, 0x32 centres [verified] - so the
+   reconstruction needs one body, not two.
+
+2.5.  The Thrusters
+
+   THE TWO TYPE-4 SLOTS ARE THE THRUSTERS, at x of -0xb400 and
+   +0xb400 with y zero and z 0x3200. The 0x493e0 Scene_SetupPart14
+   adds and subtracts goes on the SORT position only, the same way
+   the temple's two carry it.
+
+   THEY ARE NOT THE TEMPLE'S BLOB. Draw_GlowOval 0x002cf19e writes
+   LIGHT alone, through g_RampSpark and then g_LightSatLut, where the
+   temple's adds a packed colour longword.
+
+       dist  = g_PolarTable[0x10000 + (ty << 8 | dx)], low byte
+       level = g_BlobFalloff[radius << 8 | dist]
+       LIGHT = g_LightSatLut[(LIGHT + g_RampSpark[level]) & 0xff]
+
+   AND THE ROW INDEX DOES NOT ADVANCE EVENLY, which is the whole
+   shape. Above the centre it steps a full table row, 0x100, per
+   screen row; at and below it steps 0x50 [verified, 0x002cf29a], so
+   the lower half is stretched to 3.2 times its height. The result is
+   a teardrop - an oval with a plume below it - not a disc.
+
+   Its row bound is 0x63 where every other blob in the file uses
+   0x64, AND BOTH ITS LOOP BOUNDS ARE EXCLUSIVE: each takes
+   last - first and subtracts one more before the dbf [verified,
+   0x002cf20e and 0x002cf258], so the last row and column go
+   undrawn. Together those make row 97 the last one lit, and the
+   demo leaves 98 and 99 dark.
+
+   READING THE BOUND AS INCLUSIVE LIGHTS ROW 98, which shows up as a
+   bright line along the bottom of every frame of the shot and reads
+   as a glow that stops one row short.
+
+   THE RADIUS COMES FROM A TABLE, NOT A CURVE. Scene_SortAndDrawAll's
+   type-4 branch reads the slot's +0x30 - g_Part14GlowRadii, eight
+   longwords running 2400, 2240, 2000, 2240, 2400, 2560, 2800, 2560 -
+   at (g_FlareSizeStep >> 1) & 7, shifts it left ten and divides by
+   the depth, capping at 0x7f [verified, 0x002d2af8]. mode 1 turns
+   g_FlareSizeStep one a tick, so the thrusters pulse on an
+   eight-step loop.
+
+   THE RADIUS IS LARGE AND THAT IS CORRECT. On hardware the demo
+   draws one at screen (117, 69) with radius 111 over a depth of
+   0x5be6 [observed, breakpoint on 0x002cf19e]. The reconstruction
+   puts the same glow at (116, 69) over a depth of 23860.
+
+3.  What It Stages
+
+   SpaceModule_Run's D0 == 1 entry sets, in order [verified,
+   0x002c8258], and almost every one was already named:
+
+       g_SceneObjectCount  0xe        FOURTEEN OBJECTS, not a mode
+       g_SceneSortSkip     0
+       g_ObjectAngle       -0x350
+       g_PanoramaScrollX   0x100
+       g_CamSrcX           0x7724
+       g_CamSrcY           -0x11170   the depth subtrahend
+       g_CamSrcZ           -0x1770
+       g_CameraYaw         0x230      written three times, 0x5a00
+                                      and -0x100 first
+       g_CameraPitch       0x50
+       g_PortalPhase       0
+       g_SunRange          0x6ff9
+       (0x002e0b66)        0x6ff9
+
+   then installs the VBL hook at 0x002d568e and calls
+   SpaceModule_InitTables.
+
+   THE CAMERA IS A POSITION AND A PAIR OF ANGLES, ALL STAGED
+   DIRECTLY. g_CamSrcX/Y/Z are latched into g_CamX/Y/Z once a frame
+   by every renderer in the engine, and the yaw and pitch are their
+   own globals. src/part_portal.c already drives exactly these
+   through Space_SetCamera.
+
+3.1.  What Moves It
+
+   ALL OF THE SHOT'S MOTION IS ONE BLOCK OF THE VBL HOOK.
+   Anim_ModeStep 0x002d58a2 dispatches on g_SceneMode, which
+   SpaceModule_Run sets to 1 immediately before the call [verified,
+   0x002c8310], and mode 1 is 0x002d5b86:
+
+       g_SceneAngleA  += 1        the sun's spin
+       g_CamSrcY      += 0xc8     the depth, which CLOSES
+       g_CamSrcX      -= 0x82
+       Camera_AimAhead            with g_CamAim12A at 0x3e8
+       g_PortalPhase  += 2        once g_CamSrcY passes 0x2af8,
+                                  to a ceiling of 0xfe
+       quit                       once g_CamSrcY passes 0x88b8
+
+   so THE SHOT IS 525 TICKS OF ARITHMETIC, not a music cue:
+   (0x88b8 + 0x11170) / 0xc8 exactly.
+
+   THE YAW IS NOT IN THAT LIST AND TURNS ANYWAY. Reading only the
+   addi.l instructions says the camera never turns; it swings most of
+   a right angle, through Camera_AimAhead 0x002d5772. That is
+   Camera_TrackTarget with the target pushed 0x3e8 ahead on Z and ONE
+   ASYMMETRY: a positive yaw step is replaced by exactly 3 while a
+   negative one passes through whole [verified, 0x002d57a8], so the
+   camera whips one way and creeps back the other.
+
+   Checked against the running demo: g_CamSrcX,
+   g_CamSrcY and g_CameraYaw all read what 247 ticks of the above
+   produce [observed].
+
+   ONE TICK IS ONE VBL HERE. 100 frames of amiga_frames move
+   g_CamSrcY by 20000, which is 100 steps of 0xc8 exactly
+   [observed]. The loop waits one vertical blank per
+   Space_StepDeparture and draws every time, so nothing in this scene
+   runs at half rate.
+
+3.1.1.  Which Counters Anchor A Frame
+
+   ONLY THE TWO THAT ARE STAGED. g_CamSrcX and g_CamSrcY are set to
+   known values by SpaceModule_Run, so a reading's tick is
+
+       tick = (live - start) / step
+
+   and the two cross-check each other. tools/anchor.py holds the
+   table and refuses rather than guess when they disagree or when a
+   value does not land on its own step.
+
+   G_SCENEANGLEA AND G_FLARESIZESTEP LOOK LIKE ANCHORS AND ARE NOT.
+   Both advance one a tick in the same block, but neither appears in
+   SpaceModule_Run's staging, so each carries whatever the earlier
+   scenes left: at a tick of 247 they read 0x3709 and 0x21a7, not
+   247 [observed, on hardware].
+
+   THAT IS ALSO A DIVERGENCE IN THE RECONSTRUCTION. part_return.c
+   starts both at zero because it cannot replay the demo's whole
+   history, so the sun's rotation - g_SceneAngleA >> 2 feeds
+   Space_DrawSunBlob's ang_a, section 2.1 - sits at a different phase
+   from the demo's. The sphere turns correctly; it is not at the same
+   angle. Priming is the only way to make a scored frame agree there.
+
+   Anchored so far: ticks 52 and 280 of the flight; in the swirl,
+   ticks 18 and 261 of its 600-tick backstop, tick 430, and tick 24
+   of the BURST [observed]. The swirl anchors on
+   g_SceneFuseTicks, which is staged and falls one a tick; g_PortalOpen
+   climbs one per FOUR ticks so it cross-checks but cannot anchor.
+   The burst anchors on g_BurstGrow, staged to 0xa0 and turned one a
+   tick.
+
+   SLOT 8 IS THE WHITE FRAME BETWEEN THEM and reads g_SceneMode 0,
+   which no phase sets while running - Space_RunPortalRun clears it
+   at 0x002c90a0 for its Space_FillWhite frames - that one presents
+   twice, see 4.2.
+
+3.2.  The Rays Turn
+
+   SPACE_STEPDEPARTURE WRITES THE FLARE'S RAY PHASE and a part that
+   leaves it alone draws a still sun. g_ApproachSpin 0x002e0c1c takes
+   0x12c less the panorama scroll [verified, 0x002c931a], and its LOW
+   BYTE is the offset Draw_Flare adds to the polar angle before each
+   of its two ray samples. The scroll climbs as Camera_AimAhead turns
+   the yaw, so the rays turn with the view - the same sun as the
+   opening's, moving the same way.
+
+3.3.  The Light Base
+
+   Space_RunDeparture calls Ham8_BuildTables with 0x3f, 0x3f, 0x5f
+   [verified, 0x002c8e6a] - the same base the temple's mode 0 and 1
+   use. The portal run rebuilds them at 0, 0, 0, which is what turns
+   a LIGHT-only pixel black there rather than pale.
+
+4.  What Is Already Ours
+
+   The backdrop this scene needs is in src/space.c and was written
+   for the opening: Space_DrawSky, Space_DrawPlanetAndHalo,
+   Space_DrawFlareGhosts, Space_DrawHorizonBand, Space_SetCamera and
+   Space_Project. part_approach.c is the closest worked example of
+   driving them.
+
+   Of Space_RunDeparture's own calls, Ramp_BuildSaturate 0x002cff1e
+   and Ham8_BuildTables 0x002ca456 are transcribed in gfx.c, and
+   Flare_BuildGhostSprites 0x002cf4cc and Scene_SetupPart14
+   0x002d0146 are named but not transcribed.
+
+   Of the eight things the step does, four were already transcribed:
+
+       Draw_Flare            gfx.c, as Gfx_Flare
+       Portal_DrawGlow       space.c, as Space_PortalGlow
+       Scene_SortAndDrawAll  ship.c and orbscene.c, as
+                             OrbScene_Register then Ship_Draw
+       Flare_Draw            space.c, as Space_DrawFlareGhosts
+
+   THE SHIP COMES THROUGH ONE SHARED RENDERER. src/objset.h declares
+   an object set - geometry triples, UV passes, cull modes and the
+   halve - and part_temple.c holds the body both parts draw with,
+   because the temple's object projection and Scene_TransformProject
+   agree in every constant. The departure supplies its own set and
+   its camera; the temple's remains the default.
+
+   TWO PARTS DRAW PORTAL_DRAWGLOW. It is CODE_03's routine, so
+   space.c holds the body and both call it; part 2.3 walks the phase
+   and the offset itself, the departure takes the phase from its
+   camera and the offset from the scroll.
+
+4.1.  Coming Into It
+
+   THE SCREEN IS BLACK WHEN SPACE_RUNDEPARTURE IS ENTERED and stays
+   black for under ten frames [observed, on hardware, run forward to
+   a breakpoint on 0x002c8e58]. IT IS NOT A DELIBERATE PAUSE: nothing
+   on the path waits. Space_RunReturn's prologue builds the sky's
+   direction table at 0x002d3a04 - 65536 longwords - and
+   Space_RunDeparture then builds the panorama, the ghost sprites,
+   the saturation ramp and the whole object set before its first
+   frame. The gap is that work, with the display already cleared.
+
+   What precedes it is long: the underside shot fades for some 430
+   frames before the cut. A reconstruction that
+   ends the previous part cleanly and holds black briefly matches
+   what is on screen, but the hold is the port's own and the demo has
+   no counter for it.
+
+4.2.  The Ship Goes, And The Screen Ripples
+
+   ITS COUNTERS DO NOT START WHEN THE PHASE DOES. The flight ends at
+   525 - that is arithmetic on the demo's own camera limits, 0x88b8
+   to -0x11170 at 0xc8 a field - but the mode 2 block does not step
+   g_RipplePhase or g_ApproachRange until SEVEN FIELDS LATER. The
+   white frame, the panorama bake and Ham8_BuildTables are what sits
+   in the gap, and it is the same effect the burst's setup frame has
+   on its own decay [observed, section 2.3.3].
+
+   Measured against hardware, where the ripple is at an age of 7
+   rather than the 14 its absolute tick suggests: holding the
+   counters for seven fields improves every channel, LIGHT 5.66 to
+   2.11 and R 5.69 to 3.94. The step amounts themselves were never
+   wrong - 0x002d5c38 subtracts 0x1f4 from the phase and 0xc from
+   the range, which is what src/ already had.
+
+   RT_BURST FOLLOWS IT, so the ripple still gets its full 227 steps
+   before the swirl begins. The burst's own anchors move with it and
+   improve slightly: LIGHT 0.21 to 0.06 at the decay-matched tick.
+
+   THE DEPARTURE HAS A SECOND HALF and the reconstruction stops
+   before it. Once the main loop ends, Space_RunDeparture runs
+   [verified, 0x002c8ec4]:
+
+       g_SceneMode = 0              mode 1's motion stops
+       Space_FillWhite 0x3f3f003f   BOTH buffers, then presented
+       Ham8_BuildTables 0x1f, 0, 0x2f
+       0x0021fdca over 0x2f1180     a four-long block, paired with
+                                    0x0021fdb4 at the end
+       0x002c9868                   bake the panorama for the ripple
+       g_ApproachRange = 0xdc0
+       g_RipplePhase = 0
+       g_SceneMode = 2
+       loop 0x002c8f2a              until the range reaches 0x320
+
+   THE WHITE HOLDS FOR THREE FIELDS AND ITS LENGTH IS THE BAKE'S.
+   Space_FillWhite fills TWO buffers in one pass - A0 from
+   (0x002f101c) and A1 from (0x002f1020), 0xfa0 turns of four
+   longwords into each [verified, 0x002cd422] - and only one
+   Space_PresentFrame follows it. Nothing is presented again until
+   the panorama bake and the table rebuild have finished, so the
+   white stays up for as long as that work takes: g_SceneMode is
+   cleared on field 489 and set to 2 on field 491, the fill lands on
+   490, the render path carries white again on 491, field 492 writes
+   nothing at all, and content returns on 493 [observed, from the
+   first fields of part 15].
+
+   A RECONSTRUCTION CANNOT DERIVE THAT LENGTH, since the bake costs
+   it nothing. Ours holds the white for the measured three fields -
+   RT_FLASH_FIELDS - inside the seven-field setup window the
+   counters already sit out. Painting one field instead runs every
+   later tick of the part two fields early against the music, which
+   reads as the audio lagging.
+
+   THE SWIRL'S FLASH STATES ITS OWN LENGTH instead, and is the one
+   place the demo does: Space_RunPortalRun calls Space_PresentFrame
+   TWICE in a row [verified, 0x002c90b0 and 0x002c90b6] before its
+   rebuild. Its total is not yet measured.
+
+   so THE SHIP DOES NOT EXPLODE - IT STOPS BEING DRAWN. The white
+   frame is the flash, and from there the frame routine draws only
+   the ripple and one flare. Nothing projects the vessel again.
+
+   THE FRAME IS ALREADY OURS IN FULL. 0x002c935a is three things:
+
+       Space_Ripple           0x002cd760   space.c
+       Explosion_DrawFlash    0x002cd71c   part_portal.c flash_radius
+       g_ApproachSpin += 4                 the flare's ray phase
+
+   and mode 2 of the VBL hook is the whole of its motion [verified,
+   0x002d5c38]: g_RipplePhase -= 0x1f4 and g_ApproachRange -= 0xc,
+   the latter clamped at zero. 227 ticks, which is (0xdc0 - 0x320)
+   over 0xc rounded up.
+
+   THE LIGHT BASE CHANGES FOR IT. 0x1f, 0, 0x2f against the shot's
+   own 0x3f, 0x3f, 0x5f, so the ripple resolves toward a dark purple
+   rather than the departure's pale blue.
+
+4.2.1.  The One Routine That Is New
+
+   0x002c9868 is Space_BlitPanorama written into g_pWarpBuffer rather
+   than the frame: 0x64 rows of 0xb0 longwords from g_pPanorama at
+   (g_PanoramaScrollX - 8) * 4, the source stepping 0xa00 bytes a
+   row. That is 176 wide against the screen's 160 - eight columns of
+   slack each side - which is the shape src/space.c already holds for
+   Space_BakeSky.
+
+   THE TWO BAKES DIFFER BY A ROW. Space_BakeSky fills from
+   RIPPLE_LIVE, one row plus eight longs in; this one writes from
+   offset zero and the frame hands the ripple g_pWarpBuffer + 0x20,
+   which is eight longs with no row. src/space.h.
+
+4.2.2.  Where The Readings Sit
+
+   Tick 492 of the departure's 525, and tick 14 of the ripple's 227
+   [observed]. Both counters agree in each case.
+
+5.  The Reconstruction
+
+   src/part_return.c is the departure shot, registered as part 2.15.
+   It carries pan_build, pan_blit, sun_blob and sun_flare - the four
+   that were new - and drives the rest.
+
+   IT NEEDS RELIC.DAT. The panorama's overlay is Fearth and the sun's
+   texture is Fplasma, so without -dat the part reports NO PANORAMA
+   and draws the ship on an empty frame.
+
+   THE ENDING IS IN IT TOO. Past tick 525 the part switches to the
+   ripple: one Space_FillWhite frame, the light base at 0x1f, 0,
+   0x2f, the panorama baked into the warp buffer, then 227 ticks of
+   Space_Ripple and the flash. Only Space_BakePanorama was new -
+   everything else was already in space.c and part_portal.c, and the
+   flash moved to space.c so both parts draw one body.
+
+   THE BAKE AND THE WHITE FRAME ARE SPLIT ACROSS step AND frame. The
+   bake is state and lives in step(), because done in frame() it is
+   skipped the moment a host seeks past the phase boundary and the
+   ripple then has no source at all. The white frame is drawing and
+   stays in frame().
+
+   THE PORTAL RUN IS IN IT TOO, as two further phases. Both end on a
+   music cue and the fuse each arms is a backstop the cue beats: the
+   swirl runs 362 ticks from 759 against its 0x258, and the burst 442
+   from 1121 against its 0x1f4 [observed, a clean run from the demo's
+   first frame]. 0x002e0a92 reads 0xee on the field the swirl's cue
+   is consumed and the burst's own re-arm still reads 0x77 on its.
+
+   LANDMINE: 0x002e0a92 IS A SHARED SCENE FUSE. Eight routines write
+   it, 0x002c90f8 among them, which re-arms it for the burst the
+   moment the swirl ends. A reading taken anywhere after the swirl
+   measures the burst, and that is what put the swirl at 556.
+
+   The burst adds burst_maps, burst_seed, burst_particles and
+   burst_front to the file, and Gfx_FlareBand to gfx.c. Everything
+   else in its frame is the departure's - the sun blob, the flare,
+   the planet and the portal sprite.
+
+   IT DRAWS EVERY TICK WHERE THE DEMO DOES NOT, which is the one
+   deliberate divergence in the phase. Section 2.3.3's two clocks
+   are one clock here, so the light map decays about six times
+   faster against its growth than the demo's does. Scored against
+   hardware the two halves land at different ticks and each is
+   right at its own [observed]:
+
+           our tick 1320, matching its 4 decays
+                          R 2.05  G 1.53  LIGHT 0.07  B 2.89
+           our tick 1339, matching its 24 of growth
+                          R 2.01  G 1.45  LIGHT 17.33  B 2.89
+
+   At 1320 the LIGHT histogram is the demo's level for level - 60,
+   45, 48, 59 and 0 on both sides - so the wavefront itself is
+   right and only the rate it is driven at is ours.
+
+6.  Open questions
+
+
+
+   -  WHAT THE GLOW SLOTS' +0x44 IS FOR.
+      maybe_g_Part14GlowAuxA 0x002ee7ec and its pair 0x002ee7f8 are
+      written there by Scene_SetupPart14 and nothing in the type-4
+      draw reads them. The radius is the +0x30 table - section 2.5.
+
+   -  OBJECT 10'S FLAT PASS. 0x002d06be hands Uv_GenerateFaceParams
+      a texture of 0x0024fae2 and a D2 of 0xb2 where the temple's
+      call uses 0x0023a1ca and writes no D2 at all. What the 0xb2
+      selects is not read, and the stride is taken as its
+      neighbours' 128 [inferred].
+
+   -  WHAT THE FLIGHT SCORES, raw to raw, per channel [observed]:
+
+           tick  52   R 1.08  G 0.92  LIGHT 3.92  B 1.03
+           tick 247   R 3.60  G 3.16  LIGHT 1.44  B 4.00
+           tick 280   R 4.30  G 3.93  LIGHT 0.48  B 3.91
+           tick 347   R 2.27  G 1.99  LIGHT 0.63  B 2.60
+           tick 493   R 1.91  G 1.83  LIGHT 1.26  B 2.75
+           tick 539   R 3.94  G 3.27  LIGHT 2.11  B 3.77
+
+      The last is the ripple.
+
+   -  WHAT RATE THE BURST SHOULD DRAW AT. The demo ties the light
+      map's decay to the draw and the blast's growth to the field,
+      and does not hold a field rate through the phase. A port that
+      draws every field cannot have both. Section 5 keeps the
+      code's own coupling and takes the faster fade; whether the
+      scene reads better with the decay moved onto the field is not
+      settled, and nothing may be tuned to a capture to decide it.
+
+   -  SCORE IT RAW TO RAW, NEVER THROUGH A PPM. Against hardware
+      the shot reads R 3.60 G 3.16 LIGHT 2.59 B 4.00, with 6.5% of
+      pixels byte-identical [observed]. The same pair compared as
+      PPMs reads 40.5: the emulator's PPM is the front buffer, taken
+      AFTER the HAM8 resolve has consumed LIGHT in place, so every
+      glow scores as undrawn and the colours are compared across the
+      resolve. Adding the thrusters moved the PPM score the wrong way
+      and the LIGHT channel from 8.24 to 2.59.
+
+   -  THE SECOND TEMPLE CALL is the only part of this stretch of the
+      demo still unread. Both of the return flight's shots are
+      accounted for.
+
+   -  THE SECOND TEMPLE RUN. TempleModule_Run is called again after
+      this scene and nothing is known about what that call draws.

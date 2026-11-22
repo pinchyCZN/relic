@@ -1,0 +1,565 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                  THE VALLEY, THE BIRDS AND THE ROCK
+
+
+Abstract
+
+   Stills_RunModule's one scene: a green forested valley under a red
+   sky, opening on a flock of pixel-sized birds and ending with a
+   rock coming down. It follows the return module of
+   effects/debris.txt and is the fourth of act two's six calls.
+
+   It is unlike every scene before it in one respect - ITS PICTURE
+   IS A PHOTOGRAPH EMBEDDED IN THE EXECUTABLE, and the frame is
+   repainted from it every pass rather than accumulated.
+
+Table of Contents
+
+   1. Where It Sits
+   2. The Frame
+      2.1. The Picture
+      2.2. The Birds
+      2.3. The Sky Flash Is Lightning
+      2.4. The Blur
+      2.5. The Rock
+      2.6. Two Scenes, Two Generators
+      2.7. The Glows Are Copied, Not Shared
+      2.8. The Blast
+      2.9. The Impact's Base Pass
+      2.10. The Haze
+      2.11. Every Loop Ends On A FIELD Count
+   3. The Reconstruction
+   4. Open questions
+
+1.  Where It Sits
+
+   Stills_RunModule 0x00313f6c is three calls and the middle one is
+   the whole scene [verified]:
+
+       0x00313fa8   setup
+       0x00314304   Valley_RunScene
+       0x00313f7c   teardown
+
+   Valley_RunScene sets the light base to 0x7f/0x5f/0x4f, hooks the
+   VBL at Valley_VblHook 0x003163c0, stages a long list of globals
+   and then runs SIX LOOPS, not one. The first three are this
+   scene and the last three are the city - effects/city.txt 1
+   [verified]:
+
+       0x00314402   the birds alone      - section 2
+       0x00314438   the rock falling     - section 2.5
+       0x003144c2   the impact           - section 2.9
+       0x0031460c   the city, shot one   - effects/city.txt
+       0x003146f2   the city, shot two   - effects/city.txt
+       0x0031482e   the city, shot three - effects/city.txt
+
+   THE LOOPS ARE EASY TO CONFUSE AND ONE GLOBAL SEPARATES THEM.
+   They all clear 0x00237218 and set 0x0033b044, so the frame
+   counter cannot tell them apart. g_ValleyPhaseRate 0x0033b050
+   can: the impact sets 1, the city's first and third shots 3 and
+   its second 4. Only the impact draws the blast, the base pass
+   and the trail; the city's loops draw 0x00315c34, 0x0031589e and
+   Valley_DrawHaze.
+
+   The second ends when the rock's size falls under 0x1400 and the
+   third begins by clearing 0x0033b04e, which stops the stepper,
+   and setting 0x0033b044, which stops the rock easing.
+
+   THE GROUND IS A GREEN FORESTED VALLEY, not dunes or sand - the
+   picture of section 2.1 is a photograph of wooded hills under a
+   red sky, with a stony foreground [observed, on hardware].
+
+2.  The Frame
+
+   Four calls, in this order [verified]:
+
+       Valley_BlitBase    0x00315b42   the picture, 16000 longwords
+       Valley_SkyFlash    0x00314882   gated; the impact's flash
+       Valley_DrawBirds   0x003148f8   eight one-pixel birds
+       Valley_PostPass    0x00315f6a   the blur at 0x0031636c
+
+   EVERY FRAME REPAINTS FROM THE PICTURE, so nothing accumulates in
+   the colour plane.
+
+   THE OPENING USES NO LIGHT AND THE REST OF THE SCENE USES A GREAT
+   DEAL. The light plane is entirely zero while the birds have it to
+   themselves, because the picture and the birds both write zero
+   there; the rock and the impact then drive it past 0xfe, well
+   outside the 0..0x3f the space scenes keep to [observed].
+
+   A FRAME HERE IS READ FROM *(0x0033b0b2), NOT 0x0033b0ae. The
+   blur takes 0x0033b0ae as its source and writes the other, and
+   Valley_PostPass resolves the other, so 0x0033b0ae is the work
+   buffer mid-draw. A capture lands between Valley_BlitBase and the
+   rock, where the work buffer holds nothing but the bare picture.
+
+2.1.  The Picture
+
+   An IFF DEEP FORM sits in the executable at 0x00316748, 0xbbc4
+   bytes, its DGBL chunk giving 0xa0 by 0x64 - 160 by 100, the
+   frame's own size [verified]. It is NOT in relic.dat, which is
+   why no chunk name describes this scene.
+
+   Valley_LoadDeepImage 0x0031426a decodes it once into
+   *(0x0033b0ca), and 0x00316738 then points at the decoded copy
+   that Valley_BlitBase reads.
+
+2.2.  The Birds
+
+   Eight of them, each ONE PIXEL, from a table written into the
+   code rather than into data - x, y and a phase offset
+   [verified]:
+
+       +----------+----------+---------+
+       |    x     |    y     |  phase  |
+       +==========+==========+=========+
+       | 90       | 70       | 0       |
+       | 92       | 72       | 0x3e8   |
+       | 87       | 75       | 0x5dc   |
+       | 95       | 77       | 0x6a4   |
+       | 85       | 72       | 0x320   |
+       | 80       | 72       | 0x384   |
+       | 55       | 72       | 0x320   |
+       | 57       | 72       | 0x384   |
+       +----------+----------+---------+
+
+   Valley_DrawBird 0x003149f8 takes three sine pairs at three phase
+   globals plus the bird's own offset, each masked 0x1fff, and
+   displaces the bird by their sum >> 8 >> 4. The second table is
+   g_SinTable 0xc00 on from the first.
+
+   THE FIRST PAIR IS DEAD. 0x00314a0c loads it and 0x00314a26
+   overwrites both registers before either is read, so only the
+   second and third phases move a bird.
+
+   The colour alternates on BIT 8 of the first phase plus the
+   bird's offset - 0x28280030 against 0x08080010 - and that is the
+   wing beat. Both have a zero LIGHT byte.
+
+   x is clipped at both ends; Y IS CLIPPED ONLY BELOW, so a bird
+   past the bottom indexes straight past the frame.
+
+   The phases and the drift are stepped in Valley_DrawBirds, ONCE
+   PER DRAW rather than per field:
+
+       0x00314a8e += 0x1c3        0x00314a92 += 0x53
+       0x00314a96 += 0x1f         0x00314a9a += 1
+
+   and the drift wraps from 0x64 back to -0x64. That is the flock
+   crossing the screen a pixel a draw and starting over.
+
+2.3.  The Sky Flash Is Lightning
+
+   Valley_SkyFlash 0x00314882 is gated on 0x0033b04c, and THAT
+   COUNTER IS RANDOM LIGHTNING RATHER THAN THE IMPACT. Valley_
+   StepScene counts it down while it is positive, and at zero a
+   Valley_Rand(0x50) of zero - one field in eighty - re-arms it
+   with Valley_Rand(0xa) plus one [verified]. So the band flickers
+   for one to ten fields at a time throughout the scene, from the
+   opening onward.
+
+   It adds 0x20100000 - R plus 0x20, G plus 0x10, nothing to LIGHT
+   or B - to every longword of a row, taking 0x02010000 off the
+   addend after each one.
+
+   IT ENDS ON dble, NOT dbf. The condition codes come from the
+   subi.l at 0x003148a4 and the condition is LE, so the loop stops
+   the moment the addend reaches zero - SIXTEEN ROWS IN, never
+   seventeen. The 0x1d counter is an upper bound that is never
+   reached, and the addend never goes negative.
+
+   Measured on the demo against a quiet baseline, with six fields
+   of flash accumulated through the blur: R +26 and G +12 at row
+   0, tapering to R +1 at row 15 and EXACTLY ZERO FROM ROW 16
+   DOWN, with B untouched throughout [observed].
+
+   Reading the 0x1d as a plain dbf runs the full band, drives the
+   addend negative and takes red and green out of rows 17 to 29.
+   That leaves a blue wash sweeping down the screen which the demo
+   never shows.
+
+2.4.  The Blur
+
+   Valley_BlurFrame 0x0031636c averages the pixel above and below,
+   then left and right, over 0x3e7f longwords with a 0x280 row
+   stride - 160 by 100 four-byte pixels.
+
+   Every add is masked 0xfefefefe before roxr.l #1, which halves
+   four bytes inside one longword without carrying between them.
+
+   IT READS 0x0033b0ae AND WRITES 0x0033b0b2, which is also what
+   gets presented. SO THE FINISHED FRAME IS NEVER THE ONE THE REST
+   OF THE MODULE DRAWS INTO: 0x0033b0ae holds a render in progress
+   for most of a loop iteration, and a capture taken from it, or
+   taken on no particular instruction, catches a part-drawn frame
+   that still reads as a plausible image.
+
+   To capture a scored reference, stop on the TOP of the scene's
+   loop - 0x003144f2 for the impact, 0x0031463e and 0x00314702 for
+   the city's first two shots - and read 0x0033b0b2.
+
+2.5.  The Rock
+
+   Valley_StepScene eases three globals EXACTLY AS THE DEBRIS
+   SCENE'S BODIES ARE EASED, which is the one piece of machinery
+   the two scenes share [verified]:
+
+       0x0033b070 -= it >> 3        x offset, staged 0x8c00
+       0x0033b074 -= it >> 3        y offset, staged -0xc800
+       0x0033b078 -= it >> 4        size,     staged 0xb400
+
+       screen x = (x offset >> 8) + 0x50
+       screen y = (y offset >> 8) + 0x41
+       radius   = (size >> 8) + 0xa, clamped 0x7f
+
+   so it enters off the top right at a clamped radius and eases in
+   to (0x50, 0x41) at radius 10. A fuse at 0x0033b04a, staged
+   0x270f, holds all of this still until the second loop sets it
+   to 1 - which is why the opening is birds alone.
+
+   THE STEPPER COMPUTES THE SCREEN TRIPLE AND THROWS IT AWAY. D1,
+   D2 and D3 are built at 0x003164ce and the routine returns
+   without using them; the second loop recomputes the same three
+   from the globals at 0x00314454.
+
+   VALLEY_DRAWROCK IS SPACE_DRAWLIGHTBLOB'S ALGORITHM, which is
+   why the streak reads like the swirl [verified]:
+
+       v = g_BlobFalloff[(radius << 8) | dist]
+           + turb[cursor1 + dist]
+           + turb[cursor2 + dist + (angle >> 2)]
+       LIGHT += ramp[v]
+
+   the falloff warped by two turbulence samples, one at the
+   distance and one at the distance plus a QUARTER OF THE ANGLE.
+   The swirl halves its height into an ellipse; this takes the
+   span straight, so it is a circle. Section 2.7 still holds - it
+   is a copy of that algorithm, not a call to it.
+
+   THE RAMP INDEX IS A SIGNED WORD AND RUNS OFF BOTH ENDS. The
+   turbulence is about +/-52 either side of a 0..255 falloff, so
+   the index reaches roughly -52 to 307. The 0x50 bytes before
+   0x0033b79e are 0x3f and the bytes after it are zero, so the
+   core saturates and the rim fades out. Masking the index to
+   0xff instead wraps the rim onto the ramp's bright head and
+   draws a RING rather than a meteor [observed].
+
+   0x00314102 builds the turbulence: 1024 words, each a
+   Valley_Rand(0x1388) less 0x9c4 times four, plus two sine walks
+   whose phases advance 0x80 and 0x100 an entry. Both cursors
+   start at the table's head and the stepper walks one forward a
+   word and the other back two, over the first 512.
+
+   The trail is Valley_SpawnTrail and Valley_DrawTrail - 0x1f
+   slots of 8 bytes at 0x0033b10e holding lifetime 0x4b, x, y and
+   the rock's radius. THE SPAWN REFUSES WHILE THE RADIUS IS ABOVE
+   0x7f, so nothing is laid until the rock is on screen, and the
+   draw drops a slot when its SIZE reaches zero rather than its
+   lifetime. Each puff is a blob of (size >> 2) plus
+   Valley_Rand(2) through its own ramp at 0x0033b9c6, which
+   0x0031409a builds as (0xff - i) >> 4 clamped - topping out at
+   15, well under the head.
+
+2.6.  Two Scenes, Two Generators
+
+   Valley_Rand 0x0031586c is the Stills module's own: a linear
+   congruential step on 0x0033b060, state * 0x5d43 + 0x5c2d, with
+   the halves folded by eor before the range is taken. It is not
+   the space module's Math_Rand 0x002cfe38 and shares no state
+   with it [verified].
+
+3.  The Reconstruction
+
+   src/part_valley.c, registered as part 2.17. It needs no
+   relic.dat: the picture is in the executable.
+
+   ITS OWN FILE BECAUSE THE DEMO'S IS. Section 2.7 found the Stills
+   module carrying its own copy of the blob skeleton, its own
+   runtime tables and its own generator, so the port keeps the two
+   apart rather than pointing this scene at the space module's
+   primitives. Nothing in src/gfx.c is reused here.
+
+   THERE IS NO IFF DECODER AND NONE IS NEEDED. Valley_LoadDeepImage
+   scans the FORM A BYTE AT A TIME for 'DBOD' rather than walking
+   chunk headers, and the body is three plain bytes a pixel with no
+   compression - 16000 of them, which is the FORM's 0xbbc4 almost
+   exactly. The three become b0.b1.00.b2 masked 0xfcfcfcfc and
+   shifted down two, so the picture arrives as 6-bit colour with a
+   zero LIGHT byte [verified].
+
+   Scored against hardware at our tick 20, raw to raw:
+
+           R 0.12   G 0.11   LIGHT 0.00   B 0.12
+
+   with 15202 of 16000 pixels byte identical [observed]. Both
+   light planes are zero, as section 2 requires of the opening.
+
+   THE BIRDS' FIRST SINE TERM IS HALVED. 0x00314a2e takes the
+   second phase's pair down one before the third phase's is added,
+   so the displacement is (sin(a2) >> 1) + sin(a3), not their plain
+   sum. Reading it as a sum moves every bird.
+
+   THE ROCK AND ITS TRAIL ARE IN. Scored against hardware at
+   our tick 429, where our rock's three counters are bit for bit
+   the demo's - 749, -1062 and 7095, giving screen (82, 60) and
+   radius 37:
+
+           R 0.16   G 0.14   LIGHT 0.78   B 0.12
+
+   with 11181 of 16000 byte identical and the LIGHT peak exact at
+   117 [observed].
+
+   THE SETUP STAGES THE BIRD DRIFT AT -0x64, not zero - 0x00313ff0
+   - so the flock enters from the left rather than starting
+   mid-screen.
+
+   THE IMPACT IS IN - all five of its calls. Score it where
+   0x0033b050 reads 1 and the threshold 0x2ba puts the frame 278
+   fields into the impact's 290. At
+   our tick 712,
+
+           R 2.12   G 1.70   LIGHT 0.28   B 1.45
+
+   [observed]. The haze's band matches in place and extent.
+
+   A FRAME WITH 0x0033b050 == 3 IS THE CITY'S FIRST SHOT, NOT THE
+   IMPACT, and that shot has no blast and no base pass in it at
+   all. Scoring the impact against one measures two different
+   scenes.
+
+   THE SCENE ENDS WITH THE IMPACT. 0x00314572 leaves the third
+   loop at 0x122 fields and falls straight into the city's
+   preamble - there is no fourth loop, and the 0x0033b050 == 3
+   that hardware shows is the city's first shot staging its own
+   rate. Twelve fields further on the demo is out of the valley
+   and seven more put it in the city, which lands the
+   scene's end on our tick 725 [observed].
+
+   How long the opening runs before the rock is released is OURS -
+   the demo leaves its first loop on a cue we do not read.
+
+2.8.  The Blast
+
+   0x00315524 is the impact's fireball and it is UNLIKE EVERY OTHER
+   BLOB IN THIS SCENE: the inner loop ends add.l D5,(A6)+, so it
+   adds a whole longword and writes COLOUR, not just LIGHT
+   [verified].
+
+       v = g_BlobFalloff[(radius << 8) | dist]
+           - rays[angle + spin]
+           - rays[angle + 2 * spin]
+       pixel += ramp[v]
+
+   The warp is SUBTRACTIVE AND ANGULAR where the rock's is additive
+   and radial, and that is what cuts spokes into the fireball. The
+   spin is the low byte of 0x0033b048, which the stepper advances
+   0xa a field, so the spokes turn.
+
+   Its radius is 0x0033b07c >> 3 clamped to 0x7f, and 0x0033b07c
+   counts down one a field from 0x3fc once the fuse is clear - so
+   the fireball SHRINKS through the impact rather than growing.
+
+   0x00314162 builds the rays: twenty runs of a Valley_Rand height
+   written over a Valley_Rand span of angles, then each entry
+   averaged with its neighbour - BY A lsr.b THAT TOUCHES THE LOW
+   BYTE ONLY - AND NEGATED, by the neg.w at 0x003141ce. The table
+   is therefore at or below zero, so the two subtractions above
+   RAISE v and push the sample further down the ramp.
+
+   Build it positive and the sign inverts the whole effect: v falls
+   instead of rising, every texel out to the clip circle lands in
+   the ramp's white head, and the fireball comes out a flat bright
+   DISC rather than a glow with a falling edge [observed].
+
+   0x003141da builds the colour ramp with the generator
+   Gfx_BuildColourRamp already transcribes - 0x7f, 0x3f, 0x3f over
+   0x780000, packed R.G.00.B. IT RUNS BRIGHT TO DARK: entry 0 is
+   0x3f3f003f and entry 0xff is 0x05020002, so a LOW v is bright.
+
+   THE INDEX IS NOT CLAMPED. 0x00315604 reads the ramp at a
+   sign-extended word, and the memory past the 256th entry is zero,
+   so a v that runs off the end adds nothing at all. Pinning it to
+   the last entry instead paints a dim rim the demo does not
+   have.
+
+   THE TRAIL SLOTS AND THE RAMP OVERLAP. 0x0033b10e holds 0x1f
+   slots of 8 bytes, which reaches 0x0033b206, and the ramp starts
+   at 0x0033b1fe. Valley_DrawTrail walks 0x1e of them and stops
+   short of it; Valley_SpawnTrail scans 0x1f and can write the
+   ramp's first entry when all thirty are busy.
+
+2.9.  The Impact's Base Pass
+
+   Valley_ImpactBase 0x00315b5a replaces Valley_BlitBase in phase
+   three rather than following it, and does two things in one walk
+   of 0x62 by 0xa0 [verified].
+
+   THE SPLAT is a BAKED byte map at 0x00322314 - a smooth bump
+   peaking near the impact, 252 at its centre on row 65 falling to
+   217 at the frame's edges. Where map[i] less the threshold is
+   non-negative the picture is HALVED and a longword from the
+   splat table added. Valley_BuildSplatTable 0x00315b22 builds
+   that from the warm palette at 0x0033aa34 through the same
+   b0.b1.00.b2 rotate the picture decode uses, so the scorched
+   lens IS the palette, shaped by the map.
+
+   THE PALETTE'S ROTATE IS NOT THE PICTURE'S. Its entries are
+   00.RR.GG.BB longwords and the rotate turns them into
+   RR.GG.00.BB; the picture's path reads three bytes and reaches
+   the same result from a different source shape. Treating the
+   palette the picture's way picks up 00.RR.00.GG and the lens
+   comes out the wrong colour.
+
+   THE THRESHOLD FALLS, AND THAT IS THE EXPANDING RING. 0x00316476
+   takes 0x0033b050 off 0x0031654c every field and floors it at
+   zero - one a field in the impact, THREE in the aftermath. As it
+   drops, more of the map clears it and the lens spreads outward
+   from the point of impact. Seen edge on that reads as a ring of
+   fire opening across the valley. The impact stages 0x3d0 and the
+   aftermath 0x320; hardware reads 0x2d5 [observed].
+
+   THE WHITENING is the same pass. Every pixel takes or.w of
+   0x0033b080, whose HIGH byte lands on LIGHT, so the whole frame
+   gets a light floor of clamp(0x0033b07c >> 5, >= 0x12). It reads
+   0x1d on hardware and falls as the blast shrinks. Without it
+   the frame scores LIGHT 28.84 against 0.50 with it [observed].
+
+2.10.  The Haze
+
+   Valley_DrawHaze 0x00315e20 lays a perspective plasma on the
+   ground, LIGHT ONLY. Both the impact and the aftermath call it;
+   the impact passes the threshold DOUBLED and the aftermath
+   passes it straight [verified].
+
+   IT IS TWO PASSES, MIRRORED ABOUT THE HORIZON. The first walks
+   UPWARD FROM ROW 49, each row advancing 0x280 and then
+   subtracting 0x500 - one row up - with the height map walking
+   alongside from +0x1ea0, and takes the row step off its
+   accumulator. The second, at 0x00315f04, walks DOWNWARD FROM ROW
+   50 for the same count, its map from +0x1f40, and ADDS the row
+   step instead. Both carry the pan's row offset on the map
+   pointer, so the gate tracks a scroll.
+
+   Missing the second pass costs the whole lower half of the
+   plasma. The row count is 0xaa0000 over the caller's term
+   clamped under 0x32, so a nearer horizon draws fewer rows - and
+   since that clamp bites for any term under about 2730 the two
+   passes are 49 rows each in practice.
+
+   THE OFFSET BETWEEN THE TWO SAMPLES CAN DRIFT, AND IN THE VALLEY
+   IT DOES NOT. 0x00315f66 is seeded 0x15e at the scene's setup and
+   0x00316494 adds 0x00315f68 to it once a field - but that step is
+   CLEARED at 0x00314392 for the whole valley and only put to 1 at
+   0x003145fa, on the way into the city. The valley's plasma is
+   still and the city's crawls [verified].
+
+   THE TEXTURE IS FPLASMA AT +0x20200 - the same chunk and the
+   same bias the debris scene's Texture_GlowLight reads, through
+   this module's own pointer at 0x0031670c. Two samples a texel,
+   the first SWAPPED before the second is added, and only the low
+   byte reaches LIGHT.
+
+   AND THE TEXTURE IS NOT THE ARCHIVE'S. Valley_DarkenPlasma
+   0x00315660 runs once from the scene's setup at 0x00314334 and
+   rewrites the chunk IN PLACE. It reads the 0x10000 longwords as
+   a 256 by 256 grid, takes max(0, |row| - 0x28) off every byte of
+   each row with the row index running -0x80 to 0x7f, and floors
+   each byte at zero. The plasma therefore keeps its middle 81
+   rows and fades to nothing at both edges [verified; three probe
+   points reproduce the live buffer exactly].
+
+   THAT FADE IS WHAT ENDS THE LOWER PASS. The pass walks the row
+   index out past 0x28 into the faded part, so its contribution
+   dies away on its own instead of stopping at a row. Read the
+   archive's copy instead and the haze ends on a HARD HORIZONTAL
+   EDGE across the screen, at whatever row the count runs out
+   [observed]. The debris scene reads the same chunk but runs
+   first, so it sees it undarkened.
+
+   IT IS A LATE EFFECT, and that is why it looks absent early.
+   Each texel is gated on the height map clearing the threshold,
+   and the map peaks at 190 in the rows the haze covers - row 30
+   is zero and row 49 runs 172 to 190 - while the threshold starts
+   at 244. Nothing draws until about 216 fields into the impact.
+
+2.11.  Every Loop Ends On A FIELD Count
+
+   0x00237218 is stepped by Vbl_Server 0x0021f9e4, so it counts
+   FIELDS, not drawn frames [verified]. Both this scene's loops and
+   the city's three shots end by comparing it - 0x122 here, 0xe6
+   and 0x96 there - and the demo re-reads it inside the loop, so a
+   frame that takes two fields to draw still costs two.
+
+   A reconstruction that counts its own drawn frames instead runs
+   every one of those loops too long on any host that cannot hold
+   the field rate, and the overrun is invisible at 1:1.
+
+2.7.  The Glows Are Copied, Not Shared
+
+   The rock, the impact and the space module's blobs all look
+   alike because THE SKELETON IS DUPLICATED PER SCENE, not
+   parameterised and not called [verified]:
+
+   -  Valley_DrawRock has NO callees. It carries its own copy of
+      the clip prologue, the row walk and the 68020 memory
+      indirect span read.
+   -  It reads the SAME BAKED TABLES as the space module -
+      g_PolarTable + 0x10000 and g_BlobFalloff - because those sit
+      in the executable and are addressed absolutely.
+   -  It reads a DIFFERENT RUNTIME TABLE. Its span half width
+      comes through 0x0033b0d6 where the space module's comes
+      through 0x002f1024, and on hardware those hold
+      0x007a8fe8 and 0x005a2620 - two separate allocations of the
+      same table [observed].
+
+   So each scene owns its own code and its own runtime tables, and
+   shares only what is baked. A reconstruction cannot assume one
+   blob routine serves both: the prologues agree, the per-pixel
+   tails do not.
+
+4.  Open questions
+
+   -  THE THIRD LOOP HAS NOT BEEN CAPTURED. What is on hand reads
+      0x0033b050 == 3, which is the aftermath. A frame taken while
+      that global is 1 - the white-out with the fireball still
+      drawn - is what the impact needs before it can be scored.
+
+   -  THE AFTERMATH'S 0x00315c34 AND 0x0031589e ARE UNREAD, as is
+      Valley_DrawHaze 0x00315e20, which both of the last two loops
+      call. The haze writes LIGHT only, adding a longword's low
+      byte over rows 28 to 49 walked UPWARD from row 49, with its
+      row count 0xaa0000 over a perspective term.
+
+   -  WHAT HAS BEEN MEASURED. The opening, birds and lightning
+      only. The rock 29 fields into its fall - its x offset and
+      its size both give 29 against the staged 0x8c00 and 0xb400 -
+      at screen (82, 60) and radius 37, with the size still above
+      the 0x1400 that ends the phase. And one past the impact:
+      0x0033b04e cleared, 0x0033b044 set and 0x0033b050 at 1
+      [observed].
+
+   -  VALLEY_DRAWHAZE 0x00315e20 IS NOT READ, and it is the whole
+      of the impact's remaining colour error. It divides 0xaa0000
+      by a perspective term, starts at frame offset 0x7a80 - row
+      49, the horizon - and walks the same height map from the
+      matching offset, so it is a ground plane rather than a blob.
+
+   -  WHAT 0x003160c0 RESOLVES. Valley_PostPass waits on a
+      semaphore, blurs, then hands *(0x0033b0b2) and *(0x0033b058)
+      to it before signalling and bumping a frame counter. It is
+      taken as the HAM8 resolve because the snapshot path at
+      0x00315f96 - bit 2 of 0x00dff016, the right mouse button -
+      passes it the same buffer, but it is not read.
+
+   -  WHAT 0x00315660, 0x00315ace, 0x00315b22 AND 0x0031667a DO.
+      All four are called once from the setup; the third is handed
+      a palette at 0x0033aa34 whose first entries are black and
+      warm oranges.
+
+   -  WHETHER THE SCENE USES A SECOND BUFFER THE WAY THE DEBRIS
+      SCENE DOES. 0x0033b0ae and 0x0033b0b2 are both read by the
+      blur, and the triple-buffer table amiga_fb knows is the space
+      module's, not this one's - reading a frame here needs the
+      pointer at 0x0033b0ae, not a buffer index.

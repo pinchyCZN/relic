@@ -1,0 +1,532 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                       THE CITY, SEEN FROM ABOVE
+
+
+Abstract
+
+   The demo's largest shot: a city photographed from overhead with a
+   fire already burning in it, then a blast that opens across the
+   picture.
+
+   IT IS NOT A SEPARATE ROUTINE. It is a later loop of
+   Valley_RunScene, reached after the valley's impact, with a
+   different picture and a different height map swapped in. It gets
+   its own note and its own part because it is a different shot,
+   not because the demo separates it.
+
+   THE GEOMETRY IS NOT GEOMETRY. The city is a PHOTOGRAPH - a
+   palettised still out of relic.dat - and what looks like it being
+   destroyed is the same height-map threshold the valley's scorch
+   uses, eating outward across the picture.
+
+Table of Contents
+
+   1. Where It Sits
+   2. Shots One And Three Are One Photograph
+   3. The Assets
+   4. The Picture Becomes The Particles
+   4.1. Each Shot Throws The City A Different Way
+   4.2. The Pan Is Bounded By The Picture
+   4.3. The Reconstruction
+   5. What Is Known
+      5.1. Each Shot's Length, Against The Music
+      5.2. The Blank Between The City And The Planet
+   6. Open questions
+
+1.  Where It Sits
+
+   Valley_RunScene 0x00314304 runs SIX loops, not the four
+   effects/valley.txt 1 lists, and the last three are the city
+   [verified]:
+
+       +---+------------+------+--------+---------------------------+
+       | # | loop       | rate | frames | picture                   |
+       +===+============+======+========+===========================+
+       | 1 | 0x00314402 |    - | a cue  | the valley                |
+       | 2 | 0x00314438 |    - | size   | the valley                |
+       | 3 | 0x003144c2 |    1 |  0x122 | the valley                |
+       | 4 | 0x0031460c |    3 |   0xe6 | Farmdata, as loaded       |
+       | 5 | 0x003146f2 |    4 |   0x96 | baked, 160 x 100          |
+       | 6 | 0x0031482e |    3 | a cue  | Farmdata, MIRRORED        |
+       +---+------------+------+--------+---------------------------+
+
+   Between 5 and 6 the frame is filled with 0x3f3f003f and
+   presented three times - a WHITE FLASH cutting the two apart.
+
+   Loop 5 is the only one of the three whose picture is frame
+   sized. 0x003146a8 decodes 0x3e80 texels - 16000, which is 160 by
+   100 exactly - where loops 4 and 6 decode 0x5fa0, which is 160 by
+   153 and taller than the frame.
+
+   AND ALL THREE DECODE INTO THE SAME TWO BUFFERS, the picture into
+   (0x0033b0ca) and the 0x80-colour layer into (0x0033b0c6)
+   [verified, 0x00314692 and 0x003146ae]. So loop 5's 0x3e80 leaves
+   ROWS 100 TO 152 HOLDING LOOP 4's PICTURE, and City_BlitBase puts
+   no ceiling on its row - the source row is y plus the pan - so
+   once loop 5's pan is past row 0 those rows are read and drawn.
+   Loop 5's bottom edge is the previous shot's photograph, not slack.
+
+   The height map and the mask are NOT decoded into a buffer: loop 5
+   points straight at 0x00335fe0 and 0x00339e60 in the executable, so
+   reading past 153 rows of those reads whatever the image holds
+   next, and the reconstruction gets it for free by pointing at the
+   same bytes.
+
+2.  Shots One And Three Are One Photograph
+
+   Loop 6 does not load anything new. It re-decodes the SAME two
+   Farmdata parts loop 4 used and then flips all three of its
+   assets in place [verified]:
+
+       0x00314790   Stills_MirrorPixels on the 0x80-palette layer
+       0x0031479a   Stills_MirrorPixels on the main picture
+       0x003147a4   Stills_MirrorBytes  on the height map
+
+   Stills_MirrorPixels 0x003148d4 walks 0x98 + 1 = 153 rows and
+   swaps 0x4f + 1 = 80 pairs a row, pixel i against pixel 159 - i.
+   THAT 153 IS FARMDATA'S PICTURE HEIGHT, not the frame's 100, so
+   it flips the source still rather than anything drawn.
+   Stills_MirrorBytes 0x003148b0 is the same walk at a 0xa0 stride
+   for the byte map, so the destruction spreads to match.
+
+   So the first and third shots are ONE PHOTOGRAPH SEEN BOTH WAYS -
+   looking left above the city, then looking right - and the demo
+   pays for one still rather than two.
+
+   Loop 6 also swaps the palette: 0x0033a634 where loop 4 used
+   0x0033aa34, so the same picture burns in a different colour.
+
+3.  The Assets
+
+   FARMDATA IS SPLIT FOUR WAYS AND THE PARTS ARE NOT THE SAME SIZE.
+   g_FarmdataSplit 0x00316714 holds a count of 4 and four pointers;
+   their live addresses give the lengths, and each matches its role
+   exactly [observed]:
+
+       +0x00000   0x63a0   0x400 palette + 24480 indices, the city
+       +0x063a0   0x61a0   0x200 palette + 24480 indices, scorched
+       +0x0c540   0x0bf4   3060 = 20 bytes x 153 rows, THE MASK
+       +0x0d134   0x5fa0   24480 = 160 x 153, the height map
+
+   Part 3's 3060 is 20 bytes a row over 153 rows, which is the
+   1bpp mask City_BaseAndSpawn walks at 0x14 bytes a row - so the
+   split's own arithmetic confirms section 4's reading.
+
+   THE CITY PICTURES ARE PALETTISED, unlike the valley's. 0x0031429a
+   decodes them: a palette of D0 longwords first, then one INDEX
+   BYTE a texel, each index resolved through the palette and put
+   through the same b0.b1.00.b2 rotate masked 0xfcfcfcfc and shifted
+   down two that every other picture path in this module uses.
+
+   Loops 4 and 6 pass D0 = 0x100 and D7 = 0x5fa0 - 256 palette
+   entries, 0x400 bytes, and 24480 texels, which is 0x63a0 together
+   and matches the part size exactly. 24480 IS 160 BY 153, taller
+   than the frame.
+
+   Loop 5 is different in every respect. Its picture is BAKED IN THE
+   EXECUTABLE rather than in relic.dat - 0x00326194 through
+   Valley_LoadDeepImage and 0x00331d60 through the palettised
+   decoder at 0x3e80 texels - and its maps are baked too, 0x00335fe0
+   and 0x00339e60.
+
+4.  The Picture Becomes The Particles
+
+   THE TWO ROUTINES ALL THREE SHOTS CALL ARE ONE MECHANISM.
+   City_BaseAndSpawn 0x00315c34 draws the base and spawns, and
+   City_DrawParticles 0x0031589e plots what it spawned [verified].
+   The loop runs base, particles, haze, present - IN THAT ORDER
+   [verified, 0x00314652 to 0x00314664], so the haze lies over the
+   particles rather than being punched through by them.
+
+   Per column, with D4 the height map byte less the threshold:
+
+       D4 <  0        frame = the picture, untouched
+       D4 >= 0        frame = splatTable[D4] + PART 2
+
+   SO PART 2 IS WHAT IS UNDERNEATH. The intact city is part 1 and
+   the scorched ground is part 2, and the burn crossfades one into
+   the other as the threshold falls. Nothing blends them - a texel
+   is either one or the other, with the splat colour added on top
+   of the second [verified, 0x00315d7a against 0x00315cb8]. The
+   add is adda.l, a plain 32-bit add with no per-byte clamp, but
+   neither operand's bytes can carry so the distinction never
+   shows.
+
+   A texel spawns when D4 - 0x12 falls inside the band, the count
+   is under 0x3a98 - 15000 - and the mask bit is set.
+
+   g_CitySpawnBand is the cut's change THIS FRAME: 0x00315da0
+   holds the previous frame's threshold >> 2 and 0x00315c90
+   subtracts the new one, so only the newly exposed strip spawns.
+   Each shot's entry seeds it at 0xff, which makes the first frame
+   of a shot spawn across the whole already-burnt area at once.
+
+   THE MASK IS A BIT STREAM OVER CANDIDATES, NOT A STENCIL. One
+   longword is loaded per group of 0x20 columns, but the roxl.l
+   that shifts a bit out sits AFTER both height tests, so a column
+   that fails the height consumes nothing. Within a group the first
+   candidate takes bit 31, the next bit 30, and so on. A particle's
+   chance therefore has nothing to do with the mask's shape at that
+   pixel [verified, 0x00315cc4 to 0x00315cd8].
+
+   THE PARTICLE TAKES THE PICTURE'S OWN PIXEL AS ITS COLOUR. D3 is
+   the longword just read out of the picture and goes straight to
+   the node's +0x20. The photograph is not destroyed - IT IS TAKEN
+   APART INTO ITS OWN PIXELS, which is what reads as the city
+   coming down.
+
+   The particles are a DOUBLY LINKED LIST. Nodes are unlinked from
+   g_CityParticleFree and linked into g_CityParticleHead, whose
+   successor slot doubles as the walk's sentinel. The node:
+
+       +0x00  next            +0x04  prev
+       +0x08  x, 24.8         +0x0c  y, 24.8
+       +0x16  size selector   +0x18  vx, 24.8
+       +0x1c  vy, 24.8        +0x20  colour
+
+   X AND Y ARE 24.8, not 16.16 - both are read with asr.l #8
+   [verified, 0x003158c8]. The y is stored with the scroll already
+   added and the draw subtracts the current scroll, so the pan
+   carries a particle with the picture it came from.
+
+   A PARTICLE HAS NO RADIUS, ONLY A SHAPE. 0x00315900 is
+   jmp ([0x3159ce], D5w * 4) with the selector HALVED, and each of
+   the eight arms writes a different footprint:
+
+       +-----------+-------+-----------------------------------+
+       | arm       | texels| footprint                         |
+       +===========+=======+===================================+
+       | 0x315908  |     4 | a 2 x 2 block                     |
+       | 0x31591c  |     3 | an L                              |
+       | 0x31592c  |     2 | a pair across                     |
+       | 0x315936  |     1 | one                               |
+       | 0x31593c  |     3 | the other L                       |
+       | 0x31594c  |     2 | a diagonal pair                   |
+       | 0x315958  |     2 | the same                          |
+       | 0x315964  |     1 | one                               |
+       +-----------+-------+-----------------------------------+
+
+   The 0x3c table entries are NOT ordered by size - they map onto
+   those eight in a scrambled order, so a particle's shape jumps
+   about as it ages rather than shrinking cleanly [verified].
+
+   AND THE SAME FIELD IS THE LIFETIME. 0x00315986 takes one off
+   +0x16 every draw and the node dies when it goes negative. The
+   selector comes from *g_pCitySizeTable at a cursor that advances
+   a BYTE a spawn, so it wraps at 256; 0x003142bc fills that table
+   with (Valley_Rand(0x2c) + 0x10) * 2, an even 0x20 to 0x76, which
+   is a life of 32 to 118 draws.
+
+   The step is in City_DrawParticles too, after the plot:
+
+       x += vx      vx -= vx >> 3      drag, 7/8 a draw
+       y += vy      vy untouched       no gravity
+
+   Every clip failure jumps to the same exit as death, so an
+   off-screen particle is recycled at once - unlinked from the
+   active list, pushed onto g_CityParticleFree and the count
+   decremented. The clip is x >= 0x9f and y >= 0x62.
+
+4.1.  Each Shot Throws The City A Different Way
+
+   THE VELOCITY TABLE IS REBUILT AT EVERY TRANSITION, one pair a
+   texel, and there is a different builder for each shot
+   [verified]:
+
+       +------+------------+-------------------------------------+
+       | shot | builder    | origin                              |
+       +======+============+=====================================+
+       | 1    | 0x0031571a | dx = col - 0xa0, off the RIGHT edge |
+       | 2    | 0x003156b6 | the frame's centre                  |
+       | 3    | 0x00315796 | dx = col, off the LEFT edge         |
+       +------+------------+-------------------------------------+
+
+   Shots one and three share a template and differ only in that
+   first constant, which mirrors the throw the way 0x003148d4
+   mirrors the picture. Both put the origin 0x14 rows ABOVE the
+   picture's top and compute
+
+       d  = isqrt(dx * dx + dy * dy)        dy = row + 0x14
+       vx = (dx * d) >> 5 + Valley_Rand(0x64) - 0x32
+       vy = (dy * d) >> 6 + Valley_Rand(0x64) - 0x32
+
+   THE SPEED GROWS WITH THE DISTANCE - dx * d, not dx / d - so the
+   far side of the city is thrown hardest, and vy's extra shift
+   makes the throw twice as wide as it is deep. They fill the
+   PICTURE's 153 rows; shot two fills the frame's 100 and uses a
+   flat gradient from the centre instead:
+
+       vx = (col - 0x50) * 4 + Valley_Rand(0xc8) - 0x64
+       vy = (row - 0x32) * 2 + Valley_Rand(0x64) - 0x32
+
+   The table is NOT scrolled when it is read - A5 is loaded
+   straight from 0x0033b0ba - so a texel's velocity goes with its
+   place on the screen, not its place in the photograph.
+
+4.2.  The Pan Is Bounded By The Picture
+
+   The scroll is 0x0033b03c, latched to 0x0033b038 each frame, and
+   City_BaseAndSpawn takes it >> 8 as a row offset into the picture,
+   the layer and the map.
+
+   THE CAP IS THE PICTURE'S SLACK. The hook stops it at 0x3500,
+   which is 53 rows, and the picture is 153 tall against a 100 row
+   frame - exactly 53 of slack [verified]. So the pan runs the
+   full height of the still and halts at its bottom edge.
+
+   EACH SHOT STAGES THE PAN DIFFERENTLY [verified]:
+
+       +------+------------+--------+---------------------------+
+       | shot | staged at  | vel    | scroll                    |
+       +======+============+========+===========================+
+       |  1   | 0x00314602 | -0x64  | inherited                 |
+       |  2   | nowhere    | -      | latch cleared every frame |
+       |  3   | 0x003147e8 |  0x32  | cleared                   |
+       +------+------------+--------+---------------------------+
+
+   SHOT THREE OPENS ALREADY MOVING. Starting it from rest instead
+   desynchronises the pan from the burn - both run off the same
+   per-field hook, so a pan that lags leaves more of the city burnt
+   at any given height, and by the time a building reaches a given
+   row the sweep has gone further than it should.
+
+   NOTHING HERE IS WALL-CLOCK OR CPU BOUND. The pan at 0x00316444,
+   the threshold at 0x00316476 and the shot's own frame count at
+   0x00237218 are all stepped by the VBL, so their ratios are fixed
+   whatever the frame rate. Only how many DRAWS fall inside those
+   fields varies with load, and that changes smoothness, not the
+   relationship between the pan and the burn.
+
+   IT ACCELERATES, AND IT STARTS BY NOT MOVING AT ALL. 0x0033b040
+   is a velocity that grows 2 a field up to 0x190, and the scroll
+   advances by that >> 2 - but 0x00316458 branches away on a
+   NEGATIVE shift, so while the velocity is below zero it only
+   climbs and the shot holds still [verified].
+
+   The velocity is staged in the PREAMBLE, not in the shot's own
+   block: 0x0031460c writes neither 0x0033b03c nor 0x0033b040, but
+   0x00314602 puts the velocity to -0x64 on the way in, alongside
+   the 0x003145fa that starts the haze's drift. So the pan is
+   stationary for its first 50 fields and only then eases away
+   [verified].
+
+4.3.  The Reconstruction
+
+   src/part_city.c, part 2.18, with the machinery in src/stills.c.
+
+   THE PART BOUNDARY IS OURS. The demo flows out of the valley's
+   impact into these loops without re-entering, so part_city.c
+   stages counters the valley's loops would have left behind, and
+   shot three's length is ours too - the demo ends it on a cue.
+
+   THE SHOT LENGTHS ARE FIELDS TOO. 0x00237218 is stepped by
+   Vbl_Server, so 0xe6 and 0x96 are field counts and a shot that
+   counts its own drawn frames overruns - see valley.txt 2.11.
+
+   EVERY COUNTER STEPS ONCE A FIELD, not once a draw. A reading 15
+   fields into shot one, run 160 fields on, has the demo's
+   threshold, scroll and pan velocity match our tick 176 exactly -
+   275, 3906 and 252 [observed]. The demo draws more slowly than
+   it steps, but the band is the cut's change per DRAW, so a
+   slower frame rate spawns more per frame and the same texels
+   spawn in total.
+
+   Scored against hardware, raw to raw, both references taken
+   off the TOP of the shot's loop so the frame is finished - see
+   valley.txt 2.4:
+
+       shot one, 173 fields on     R 5.59  G 4.09  LIGHT 0.08  B 3.81
+       shot two,  34 fields on     R 0.82  G 0.62  LIGHT 0.40  B 0.61
+       shot three, 30 fields on    R 0.54  G 0.40  LIGHT 0.03  B 0.34
+
+   Shot three's scroll and pan velocity match hardware exactly,
+   585 and 110.
+
+   SHOT THREE RUNS 212 FIELDS. Its loop ends on the music, not a
+   count - 0x00314858 calls 0x0021ff64 and loops while it answers
+   zero - so the length has to be measured rather than read. On the
+   field it exits, 0x0031666a clears 0x00237218 from 0xd4, and the
+   other two counters agree: the threshold is 0x84, which is 0x300
+   less three a field for 212 fields, and the scroll is 0x3490 with
+   the pan velocity capped [observed].
+
+   THE PAN FINISHES AS THE SHOT CUTS. 0x3490 is 112 short of the
+   0x3500 cap and the capped velocity moves 100 a field, so the
+   still is panned to its bottom edge within a field of the music
+   ending the scene. The BURN does not finish - 0x84 of the
+   threshold is left - which is what leaves unburnt buildings in a
+   corner at the cut.
+
+   THE RECONSTRUCTION HOLDS THE TRANSITIONS. part_city.c draws each
+   of the first two shots for its loop's field count and then stops
+   drawing for the balance, so the next shot starts on the field the
+   demo starts it on and shot three gets its full length. The
+   unburnt parts match to within a level a channel [observed], and
+   the residue is the particle field, whose placement follows a
+   generator we do not reproduce - which is why the wide first shot
+   scores worse than the second.
+
+   EVERY SHOT ENTRY EMPTIES THE PARTICLE POOL. City_ResetParticles
+   0x00315ace re-links all 0x3a98 nodes into the free list and
+   zeroes the count, and all four entries call it - 0x00314360,
+   0x003145c8, 0x0031468e and 0x003147ac. Skip it and the previous
+   shot's debris keeps falling through the next one [verified].
+
+   SHOT TWO HAZES EITHER SIDE OF ITS PARTICLES. Its loop is base,
+   haze on the DOUBLED threshold, particles, haze on the straight
+   one, present - so one pass lies under the debris and one over
+   it. The other two shots haze once, after the particles.
+
+   THE ROTATE'S LOW BYTE IS THE SOURCE'S LOWEST, NOT ITS SECOND,
+   and this is the one place in the module where getting it wrong
+   is invisible until a colour is examined. lsl.l #8 leaves
+   B2.B1.B0.00 and lsr.w #8 acts on the LOW WORD, where B0 sits in
+   the high half, so the result is B2.B1.00.B0 - the last byte is
+   v & 0xff.
+
+   Reading it as (v >> 8) & 0xff picks up B1 instead. For a palette
+   entry laid out 00.RR.GG.BB that puts GREEN where BLUE belongs
+   and every burnt texel comes out with G equal to B - a pink burn
+   where the demo's is orange, with the error invisible in any grey
+   part of the picture [observed].
+
+   Shot two's still, map and mask are all baked in the executable
+   rather than loaded, and shot three mirrors the picture, the
+   layer and the map but NOT the mask [verified, 0x0031479e].
+
+5.  What Is Known
+
+   Shot one shows the city from overhead, skyscrapers in grey and
+   white, with a small orange fire burning around x 115 to 135, y 5
+   to 20. ITS LIGHT PLANE IS ENTIRELY ZERO [observed], so nothing
+   had begun when it was taken.
+
+   The machinery is the valley's, which is why the shot should come
+   cheaply once the valley is finished:
+
+       Valley_ImpactBase   thresholds a height map, halves the
+                           picture under it and adds a palette
+                           colour - effects/valley.txt 2.9
+       0x00316476          takes 0x0033b050 off the threshold every
+                           field, which is what makes the lens
+                           spread
+       Valley_DrawHaze     a perspective plasma on LIGHT, gated on
+                           the same map - effects/valley.txt 2.10
+
+5.1.  Each Shot's Length, Against The Music
+
+   THE RATE 0x0033b050 DATES EVERY SHOT WITHOUT DISTORTING ONE. It is
+   written once a shot and nowhere else in the scene - 3, 4 and 3, at
+   0x0031461e, 0x003146d6 and 0x0031480c - so a single logging watch
+   over a clean run gives all three entries with the field each
+   landed on. Counted from the (0x25,0x1d) that starts the valley's
+   last loop [observed, normal speed]:
+
+       +--------+-------+--------+--------+----------------------+
+       | shot   | field | fields | loop   | the balance          |
+       +========+=======+========+========+======================+
+       | one    |   332 |   231  |  0xe6  | 1, the decode        |
+       | two    |   563 |   159  |  0x96  | 9, white and decode  |
+       | three  |   722 |   212  | a cue  | -                    |
+       | ends   |   934 |   602  |   -    | -                    |
+       +--------+-------+--------+--------+----------------------+
+
+   THE SCENE IS 602 FIELDS AND ITS END IS THE CUE'S: 934 fields after
+   (0x25,0x1d) against the 935 the demo's own cue-to-cue span puts
+   between that pair and (0x26,0x2e). Ours runs 601, with shot three
+   measuring 210 against the demo's 212 - a field span and a musical
+   span are the same thing here, as they are everywhere: the demo
+   drops no fields - reconstruction.txt 4.5. This passage of Cmodule2
+   runs slow, about ten fields a row, so a field of disagreement
+   costs a tenth of a row.
+
+   A SHOT IS LONGER THAN ITS LOOP AND THE DIFFERENCE IS NOT DRAWN.
+   What follows a loop is a splat table, a velocity table of 24480
+   entries and two pictures decoded, and the demo's last frame stands
+   through all of it.
+
+   THE WHITE IS THREE OF SHOT TWO'S NINE. 0x00314740 fills the work
+   buffer and 0x0031474a presents it three times, on consecutive
+   fields because there is nothing left to render; the six that
+   follow present nothing at all, so the white stands through the
+   decode as well [observed].
+
+   LANDMINE: A BREAKPOINT ON EACH THRESHOLD SITE GIVES 243, 195 AND
+   132, which sum to a plausible 570. The error is not in the sum but
+   in its split - the halts cost the first two shots nothing and the
+   last one everything - and the counters at the cut are what catch
+   it: 0x00237218 reads 0xd4 where a 132-field shot would leave 0x84.
+   Date the shots off a logging watch, never a halt.
+
+   LANDMINE: MEASURING THIS SCENE UNDER WARP REDISTRIBUTES IT RATHER
+   THAN SHIFTING IT, which is why a warp sweep is not a cheap version
+   of this one. Warp starves the scene while the music keeps absolute
+   time, so each threshold is reached five to six rows further into
+   the score - 25.3f, 26.15 and 26.28 - while the cue that ends the
+   scene stays on (0x26,0x2e). The slack all comes out of the last
+   shot: warp put shot three at 67 fields against the 212 it really
+   runs, and left the first two looking right.
+
+   SHOT THREE IS THE ONE THAT SHOWS, because the scene ends on its
+   cue. Every field the first two shots take beyond their own is one
+   it loses, and at 67 it was barely half way through its burn when
+   the music ended it.
+
+   NEITHER BURN FINISHES. Shot two's threshold of 672 at 4 a field
+   wants 168 fields and its loop runs 150; shot three's 768 at 3 a
+   field wants 256 and gets 212. The white cuts one off mid-burn and
+   the cue the other.
+
+
+5.2.  The Blank Between The City And The Planet
+
+   THE SCENE'S EXIT BLANKS THE DISPLAY. 0x00314866 writes
+   g_CopperBlankStills into COP1LC and strobes COPJMP1, and that list
+   is three longwords - BPLCON0 = 0x0000, COLOR00 = 0x000, end - so
+   no bitplane is fetched and the screen is the background colour
+   [verified]. Nothing of the city is on screen from that field on;
+   its last presented frame is the one its own cue lands on.
+
+   EVERY MODULE CARRIES ITS OWN COPY of that list, byte for byte -
+   g_CopperBlank 0x002c8228, g_CopperBlank2 0x0034546c and
+   g_CopperBlankTemple 0x00347674 are the same three longwords
+   [verified]. Each is an immediate in the instruction that installs
+   it, so none of them carries an xref. The temple module installs
+   its copy twice, and effects/temple.txt 11.9 has those.
+
+   IT LASTS 67 FIELDS, which is the span to the next copper list,
+   installed by Space_DisplayOn 0x002d542e. The scene's first frame
+   is presented three fields after that. The 67 split in two
+   [observed]:
+
+       +--------+----------------------------------------------------+
+       | fields | what is happening                                  |
+       +========+====================================================+
+       |   60   | Space_RunDestruction waiting on (0x26,0x34), armed |
+       |        | at 0x002c8448 the field after the city exits and   |
+       |        | waited on at 0x002c844e                            |
+       |    7   | its tables, built once the wait returns            |
+       +--------+----------------------------------------------------+
+
+   So sixty of them are the music's and seven are the machine's.
+
+   THE RECONSTRUCTION SPLITS IT WHERE THE PARTS SPLIT. part_city.c
+   paints black until (0x26,0x34) and part 2.19 opens with seven
+   fields of black before its own counters start - effects/
+   destruction.txt 2.
+
+
+6.  Open questions
+
+   -  THE BURNT REGION'S COLOUR, LATE IN A SHOT, and the error grows
+      with the burn. Thirty fields into shot three the frame scores
+      R 0.54; at the cut, 212 fields in, it scores R 23.78 G 19.31
+      LIGHT 4.12 B 13.53 against the same field of the demo's
+      [observed]. Our heavily burnt area reads mid-tone orange where
+      the demo's goes near black - 2976 pixels under R 30 against
+      the demo's 4961 - and shifting the frame a row either way
+      barely moves the score, so it is tonal and not an alignment.
+      It is a splat-and-layer question more than a particle one:
+      g_CityParticleCount at the cut reads 11123 against our 9943.

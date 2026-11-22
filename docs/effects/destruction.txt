@@ -1,0 +1,315 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                       THE PLANET'S DESTRUCTION
+
+
+Abstract
+
+   The demo's second to last scene: the planet centred in frame with
+   the flat vessel in front of it and the far side coming apart,
+   then a white flash and a still of the aftermath.
+
+   IT IS THE SPACE MODULE'S THIRD MODE, not a new one. Everything
+   it draws except its glow is machinery the opening space scenes
+   and the return flight already built, and the glow itself is a
+   second copy of the valley's haze.
+
+Table of Contents
+
+   1. Where It Sits
+   2. The Two Phases
+   3. The Glow Is The Valley's Haze Again
+   4. The Debris Is The Aftermath
+   5. What Is Already Transcribed
+   6. The Reconstruction
+   7. Open questions
+
+1.  Where It Sits
+
+   Demo_RunAct2 0x0021f8a6 calls SpaceModule_Run with D0 = 2, between
+   the stills module and the temple module's second call [verified]:
+
+       +------------+-----------------------+------------------------+
+       | 0x0021f860 | Sand_RunScene         |                        |
+       | 0x0021f872 | TempleModule_Run  0   | the ruins              |
+       | 0x0021f884 | SpaceModule_Run   1   | the return flight      |
+       | 0x0021f894 | Stills_RunModule      | the valley and city    |
+       | 0x0021f8a6 | SpaceModule_Run   2   | THIS SCENE             |
+       | 0x0021f8b8 | TempleModule_Run  1   | the ark's departure    |
+       +------------+-----------------------+------------------------+
+
+   Space_RunDestruction 0x002c8438 is the mode's body.
+
+   THE PLANET IS AT THE WORLD ORIGIN and the camera's yaw and pitch
+   are both cleared, which is why it sits centred here where every
+   earlier space scene has it at an edge [verified]. g_SceneMode is
+   6; the return flight's is 1.
+
+2.  The Two Phases
+
+   Space_RunDestruction runs two loops with a white flash between
+   them [verified]:
+
+       1  Destruct_DrawFrame 0x002c887c, while 0x002c8c98 is above
+          -0x385. That counter is staged at 200 and falls ten a
+          field, so the phase lasts 110 fields.
+
+       2  Space_FillWhite, presented twice.
+
+       3  Destruct_DrawAftermath 0x002c88c8, with the counter reset
+          to zero and the scene fuse to 9999, until the music cue.
+
+   THE SCENE OPENS ON A BLANK SCREEN IT DID NOT INSTALL, and its
+   counters do not start with it. The wait on (0x26,0x34) at
+   0x002c844e returns seven fields before the copper list goes in at
+   0x002d542e, the city's exit left a list on the chip that fetches
+   no bitplane, and so those seven fields are black - effects/
+   city.txt 5.2 [observed].
+
+   PHASE ONE IS FOUR CALLS over a cleared frame:
+
+       Draw_Flare
+       Scene_DrawPlanetAndHalo
+       Space_BlitPortalSprite      the flat vessel
+       Destruct_DrawGlow
+
+   AND A FIFTH PASS NO SCENE'S CALL LIST MENTIONS. Space_PresentFrame
+   0x002d5520 runs Space_BlurFrame 0x002ce992 before Ham8_EncodeFrame,
+   so EVERY frame of EVERY space scene is blurred - five spatial taps
+   and the destination's previous contents, each folded in by halves,
+   the same routine Valley_BlurFrame is for the stills module.
+
+   IT IS EASY TO MISS ENTIRELY, because it lives in the present rather
+   than in the scene. Adding it to this scene moved the planet frame's
+   LIGHT from 1.46 to 0.41 and took something off every channel of all
+   three landings [observed].
+
+   THE BLUR WRITES THE BUFFER THAT IS PRESENTED. It reads
+   g_pFrameBuffer 0x002f101c and writes g_pFrameBufferBack 0x002f1020,
+   so a reference capture taken from the first of those is PRE-BLUR
+   and will not match a faithful render - the same trap the stills
+   module has at 0x0033b0ae, see effects/valley.txt 2.4.
+
+   PHASE TWO IS A STILL. It blits 160 by 99 longwords from
+   g_pRingTexture + 0x116e8 and forces byte +2 to 0x002c8622 >> 2 as
+   it goes, so the picture arrives with a UNIFORM LIGHT level rather
+   than one of its own. Then the flare and Destruct_DrawParticles.
+
+   THE SOURCE IS 256 LONGWORDS WIDE, NOT 160. The row advance at
+   0x002c88bc is +0x61 after 160 columns, so the still is a window
+   into a 256 wide grid; reading it at 160 bands the picture into
+   horizontal stripes [verified].
+
+   0x002c8628 IS THE FLARE'S RADIUS AND IT NEVER FADES. It is staged
+   at 0x7f and the subtraction at 0x002c8916 sits behind a bge that
+   skips it whenever the value is positive - which it always is - so
+   the flare holds at 0x7f for the whole phase.
+
+3.  The Glow Is The Valley's Haze Again
+
+   Destruct_DrawHaze 0x002c8ca2 IS Valley_DrawHaze 0x00315e20,
+   duplicated rather than shared - which is what the modules do with
+   every other glow in this corpus, see effects/valley.txt 2.7.
+
+   Every constant is the same [verified]: the term clamped at 0x14,
+   0xaa0000 over it for the span, the row count clamped under 0x32,
+   -0xc0000/d4 for the column start, 0x320000/d4 rotated eight for
+   the column step, 0x640000/d4 for the row step, the frame entered
+   at +0x7a80 which is row 49, and the two passes mirrored about the
+   horizon - the first walking up and taking the row step off its
+   accumulator, the second entered at +32000, row 50, walking down
+   and adding it. Two samples a texel from +0x20200 of the texture,
+   the second displaced by a drifting offset.
+
+   THREE THINGS DIFFER:
+
+       +-------------+--------------------+----------------------+
+       | what        | the valley         | here                 |
+       +=============+====================+======================+
+       | texture     | FPLASMA            | g_pRingTexture       |
+       | gate map    | the height map     | 0x002eb130 up,       |
+       |             |                    | 0x002eb1d0 down      |
+       | the write   | add.b, WRAPS       | g_LightSatLut,       |
+       |             |                    | SATURATES            |
+       +-------------+--------------------+----------------------+
+
+   The drifting offset is g_RingPhaseA where the valley's is
+   g_HazeSampleOffset.
+
+   Destruct_DrawGlow 0x002c8c52 latches the gate from 0x002c8c9e into
+   0x002c8c9a and calls the haze THREE TIMES a frame, at three
+   depths - the timer plus 0x352, the timer plus 0x4e2, and a flat
+   0xc8 - which is what layers it.
+
+   THE TEXTURE IS FPLASMA, the same chunk the valley's haze reads,
+   and Destruct_DarkenPlasma 0x002ccb08 vignettes it exactly as
+   Valley_DarkenPlasma does with ONE constant changed: the keep-band
+   is 0x1e rows here against the valley's 0x28, so this scene's
+   plasma fades sooner at the edges [verified].
+
+   THE GATE MAP IS BAKED, not built - a radial field at
+   g_DestructGateField 0x002e9290 with a HOLE WHERE THE PLANET SITS,
+   which is why the glow never draws over the disc. The two pass
+   pointers 0x002eb130 and 0x002eb1d0 are +0x1ea0 and +0x1f40 into
+   it, the same offsets the valley uses into its height map, and the
+   row at +0x1ea0 falls away from 0xff starting at column 48 -
+   exactly where the planet's disc begins [observed].
+
+   The gate falls from 0xff, and the test is gate <= map, so the
+   glow starts over the field's 0xff plateau and spreads into the
+   falloff as the gate drops.
+
+4.  The Debris Is The Aftermath
+
+   Destruct_SeedParticles 0x002c867e fills 3000 nodes of 0x20 bytes
+   at (0x002f10f8), once, in the scene's setup. THE VELOCITY IS
+   RADIAL [verified]:
+
+       a     = Math_Rand(0x2000)          13 bits, the table's range
+       speed = Math_Rand(0xd2) + 4
+       vx    = (sin[a] * speed) >> 13     0x228b6c
+       vy    = (cos[a] * speed) >> 13     0x228b6c + 0x2000
+
+   so the debris leaves evenly in every direction and the spread of
+   speeds is what stretches it into streaks. The rest of the node is
+   a z of Math_Rand(0x7d0) + 0xfa0, a radius of Math_Rand(0x1e) +
+   0x14, an index, a colour that is zero for four nodes in five, and
+   a KIND drawn from the 100-entry weighting table at 0x002c873c.
+
+   Destruct_DrawParticles 0x002c8974 projects them, and it is called
+   ONLY FROM THE AFTERMATH - the first phase never draws one.
+
+       z  = node.z - 0x002c8624          the advance, +10 a field
+       skip while z < 0x65
+       sx = ((vx << 8) / z) + 0x50
+       sy = ((vy << 8) / z) + 0x32
+
+   THE MOTION IS ENTIRELY IN Z. vx and vy never change; the debris
+   appears to fly outward because the perspective divide shrinks as
+   the advance eats the z.
+
+   LIGHT RIDES THE SAME Z, through the idiom this scene uses twice:
+   0x002c89cc takes 3000 off it and ZEROES THE TERM WHILE IT IS
+   POSITIVE, so LIGHT holds at 0x3f until z falls under 3000 and
+   then fades as the debris nears. The result is shifted up a byte
+   and OR'd into every pixel written.
+
+   The kinds, and TWO OF THEM NEVER DRAW:
+
+       +------+-------+--------------------------------------------+
+       | kind | of 80 | what is drawn                              |
+       +======+=======+============================================+
+       |  0   |   55  | one pixel in the node's own colour         |
+       |  1   |    2  | Draw_FlareTurbulent on g_RampBeamHead,     |
+       |      |       | gated on the radius projecting under 0x7f  |
+       |  2   |    9  | a 6 x 5 sprite, frame                      |
+       |      |       | (index + 0x002e0c7c / 2) & 3               |
+       |  3   |    9  | the same, from the second bank of four     |
+       |  4   |    5  | NOTHING - see below                        |
+       +------+-------+--------------------------------------------+
+
+   THE KIND TABLE HAS EIGHTY ENTRIES AND IS INDEXED OVER A HUNDRED.
+   Destruct_DrawFrame begins at 0x002c887c, eighty longwords past
+   0x002c873c, so Math_Rand(0x64) sends one node in five to read its
+   kind out of that routine's own code. Those values match nothing
+   in the dispatch and the node never draws [verified].
+
+   AND KIND 4 IS UNREACHABLE. The test at 0x002c8a0a repeats #3,
+   which the branch above it has already taken, so 0x002c8b86 is
+   dead and the five entries giving kind 4 draw nothing either.
+   Ghidra renders that as a duplicated kind-3 branch rather than as
+   unreachable code.
+
+   Between them, 25 of every 100 nodes are invisible.
+
+   0x2c8a18 IS THE LOOP'S CONTINUE LABEL, not a ramp - the routine
+   pushes it with pea and each kind rts's back to it.
+
+   Destruct_BuildSpriteSheet 0x002c8630 builds the sheet at
+   (0x002f116c) from a 768-byte index table through a palette,
+   dividing every byte by 8 and then adding 0x08040002 back to the
+   first 193 entries. Its row stride is 0x20 longwords and zero
+   texels are skipped, so the sprites carry their own mask.
+
+5.  What Is Already Transcribed
+
+   Every draw call the first phase makes is in src/ already, from the
+   opening space scenes and the return flight:
+
+       Scene_DrawPlanetAndHalo     src/space.c
+       Draw_Flare                  src/gfx.c
+       Space_BlitPortalSprite      src/space.c
+       Planet_BuildHaloRing        src/space.c
+       Planet_BuildSpriteAndMask   src/space.c
+       Turbulence_BuildTable       src/gfx.c
+       Ramp_BuildSaturate          src/gfx.c
+
+6.  The Reconstruction
+
+   src/part_destruction.c, part 2.19. The first phase only.
+
+   ITS COUNTERS MATCH. Hardware holds the timer at -180 and the
+   glow's gate still shut at 0xff, which is our tick 39 exactly
+   [observed], and the planet, its mask and the flat vessel land on
+   the same pixels - the frame's row 50 agrees across the whole disc,
+   x 54 to 108.
+
+   THE GATE IS ZEROED WHILE ITS TERM IS POSITIVE, not while it is
+   negative. 0x002d5946 adds 0x280 to the timer AFTER the field's
+   subtraction and clears the term on ble, so the gate sits at 0xff
+   and the glow draws nothing at all until the timer passes -0x280,
+   about 64 fields in. A decompiler reading of that block inverts it
+   and opens the glow immediately.
+
+   TWO CONSTANTS THE SETUP RESTAGES AND A PORT WILL ASSUME WRONG.
+   0x002c8558 passes Ramp_BuildColour a numerator of 0xfa0000 for
+   the amber ramp, nearly double the 0x780000 Ramp_BuildAll gives
+   it, and that is what carries the flare out to the frame's edges;
+   and 0x002c8502 hands Ham8_BuildTables 0x6f / 0x4f / 0x3f, which
+   is the opening scenes' base REVERSED, so light here washes toward
+   a warm white rather than a blue one [verified].
+
+   Scored against hardware at tick 39:
+
+           R 3.63   G 3.76   LIGHT 1.46   B 2.78
+
+   [observed]. The glow's hole for the planet lands within a pixel
+   of the demo's on both edges - 49 to 110 against our 48 to 111 at
+   row 50 - and the planet, its mask and the flat vessel are on the
+   same pixels across the whole disc.
+
+   THE AFTERMATH IS IN TOO. Two readings sit 22 and 318 fields
+   into it, and the advance at 0x002c8624 reads 1340 and 4300 at
+   those points against our 1340 and 4300 [observed]:
+
+       advance 1340    R 8.88   G 8.77   LIGHT 4.79   B 8.02
+       advance 4300    R 13.75  G 12.61  LIGHT 12.76  B 11.48
+
+   The debris cloud's size, place and character match; its
+   PLACEMENT cannot, since every node's angle, speed and depth come
+   from the generator. The later frame scores worse for that reason
+   alone - by then all three thousand are spread over the frame.
+
+   THE FLARE'S RAY PHASE CANNOT BE MATCHED and need not be. It is a
+   running counter the scene only increments - hardware reads
+   0x4cec - but g_RayArcs is filled by the generator, so the arcs
+   sit in different places whatever the phase. Staging the observed
+   value makes the score slightly worse, so the reconstruction
+   leaves it at zero.
+
+7.  Open questions
+
+   -  THE OTHER SPACE PARTS DO NOT APPLY THE BLUR. Every scene that
+      calls Space_PresentFrame gets it, which is all of them, but
+      only this part's reconstruction runs it. Adding it to
+      src/part_return.c scores WORSE against that part's references
+      - the burst's LIGHT goes from 0.06 to 2.54 - which says those
+      references were captured from g_pFrameBuffer before the blur,
+      not that the blur is wrong there. They need re-capturing from
+      g_pFrameBufferBack before the question can be settled, which
+      means capturing the scene again.
+
+   -  HOW LONG THE AFTERMATH RUNS. Its loop ends on a music cue, as
+      the city's third shot does, so the length is ours; we run it
+      until the advance has passed every node's z.

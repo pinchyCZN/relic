@@ -1,0 +1,1103 @@
+PCDEMOS RELIC Analysis Note
+
+
+                        THE PARTS, IN ORDER
+
+
+Abstract
+
+   What the demo shows, from the first frame onward, and which asset chunks and
+   code belong to each part.
+
+   EVERYTHING IN SECTION 2 IS [observed] - a description of the demo running,
+   not of its code. It is here to say what to go and look for; per CLAUDE.md
+   rule 12 nothing in it may be implemented directly. Where a part has been tied
+   to code or data, section 4 says so and carries the harder tag.
+
+   Section 2 covers the demo end to end. It is the work list: the effects are
+   taken in that order, and section 3 records what each one has been tied to.
+
+Table of Contents
+
+   1. Shape of the demo
+   2. The timeline, end to end
+   3. The part list in code
+      3.1. How long each part lasts, and what decides it
+      3.2. Space_RunPart, the orb sequence, phase by phase
+   4. What each part is tied to so far
+   5. Open questions
+
+1. Shape of the demo
+
+   RELIC tells a story end to end rather than running a sequence of unrelated
+   effects: a saviour returns in 10,191 AD to reveal a relic hidden on Earth,
+   and ships the chosen away at the cost of his own immortality. The readme says
+   the group designed it that way on purpose.
+
+   The main visual subject is A CIRCULAR TOWER-SHAPED SPACESHIP, reminiscent of
+   a jellyfish or an umbrella, in blue, grey, purple and magenta. It is the
+   focus of the opening and the first target of this project.
+
+   Two classes of part exist, which the demo calls 2x2 and 1x1. Only
+   2x2 parts can be snapshotted - formats/hunk.txt and overview.txt section 5.
+   Which parts below are which is not known.
+
+2. The timeline, end to end
+
+   Every scene below is [observed] - what a viewer sees, not what the code does.
+   The numbering is this document's, not the demo's: no part list has been found
+   and nothing confirms the demo runs these in a flat sequence rather than
+   branching.
+
+   2.1 THE TERMINAL. Black screen. Green text types itself out
+        along the bottom, one character at a time with a blinking
+        cursor, like an old computer terminal: "10,191 AD". The
+        letters carry a glow.
+
+   2.2 THE LOGO. Text fades in under a bright light: "nerve axis".
+        Glow on the letters and across the screen.
+
+        THE FADE IS IN THE PALETTE, NOT IN THE FIELD. From the field
+        the logo's copper list goes up, 0x0030a2d0-odd writes
+        COLOR00 and COLOR01 twice every field - once with the base
+        and once with a ramped value - and the ramp falls 0x222 a
+        field from 0xfff to 0, then restarts from a base one step
+        lower [observed, watching 0xdff180]. The copper list itself
+        carries no colour at all: it is DDF, DIW, BPLCON and the six
+        bitplane pointers, then the end word. The reconstruction
+        draws the field and does not ramp anything, so it has no
+        fade - [open].
+
+   2.3 THE PLANET. A planet fades in with a sun behind it. The
+        camera pans, the sun edges out from behind the planet and
+        lights the scene. A milky starfield lies behind. Heavy lens
+        flare on the sun.
+
+        SCENE ONE OF maybe_Space_RunPlanetScenes [verified]. Base
+        colour (0x3f,0x3f,0x3f), so the light byte brightens toward
+        white. Two loops, both on Space_DrawSunFrame, cut by music
+        cues 4:0 and 4:16 - the camera pan and the sun emerging.
+        The frame is the sun, its sprites and the flare; it never
+        calls Scene_SortAndDrawAll.
+
+   2.4 THE ASTEROID. An asteroid flies past, TEXTURE MAPPED. The
+        camera tracks it and it explodes. It comes through
+        Scene_SortAndDrawAll's sorted object list rather than the
+        octree renderer the same scene's light uses -
+        effects/approach.txt section 3.
+
+   2.5 THE SHIP ARRIVES. As the explosion fades the circular
+        spaceship appears - the jellyfish or umbrella shape. It
+        flies very close to the camera and then away toward the
+        planet.
+
+        SCENE TWO OF maybe_Space_RunPlanetScenes COVERS BOTH, in
+        two phases [verified]. Base colour (0x1f,0,0x2f), so the
+        light byte tints purple rather than white.
+
+            g_ApproachRange = 0xe60, counting down
+            loop  Space_DrawApproachFrame   while it is above 0
+            loop  Space_DrawFullFrame       until music cue 8:0
+
+        THE OBJECTS ARE GATED ON RANGE: the approach frame calls
+        Scene_SortAndDrawAll only once g_ApproachRange drops under
+        0x961, and draws no sun and no flare. g_ApproachSpin turns
+        by 4 a frame throughout. The full frame then draws the sun,
+        the sprites, the objects and the flare together.
+
+        WHICH PHASE IS THE ASTEROID AND WHICH THE SHIP IS NOT
+        SETTLED - the range gate suits something arriving from far
+        off, and the handover to a sun-lit frame suits the ship
+        reaching the planet, but neither is confirmed.
+
+   2.6 LOGO AGAIN, reading "schlott meson".
+
+        IT RUNS 469 TICKS [observed, on hardware].
+        g_LogoCounter dates it: Logo_SetupVariant seeds it 0x96 for a
+        multi-line screen and Logo_Advance adds 0xe a frame for two
+        lines, and its last write reads 0x1a2e - so
+        (0x1a2e - 0x96) / 0xe is 468 and the screen is 469 ticks.
+        src/part_logo.c carries it as PART_Logo2, a second entry at
+        variant 1 rather than a second implementation: the variant
+        index picks the line art AND the 64-colour palette, which is
+        all that differs between 2.2, 2.6 and 2.9.
+
+   2.7 THE CAPTAIN. A pixel-art image: a man standing at a window,
+        a Star-Trek-like helm behind him.
+
+        IT IS Fwadepic, AND IT IS AN IFF ILBM rather than a texel
+        block like every other chunk the port reads [verified]. Its
+        BMHD is 640 x 400, EIGHT planes and compression 1, with a
+        768-byte CMAP - so 256 colours, hires, packed with ByteRun1.
+        src/part_window.c decodes it: unpack, then deplane.
+
+        THE PLANES ARE INTERLEAVED PER ROW, not per image - each row
+        carries plane 0's bytes, then plane 1's, every plane
+        (width + 15) / 16 * 2 bytes wide, and the HIGH bit of a byte
+        is the LEFTMOST pixel. Reading them as whole images gives a
+        picture that still looks like a picture in the wrong colours,
+        the same trap formats/textures.txt records for the texel.
+        CMAP is eight bits a channel and the frame wants six, so each
+        is taken down by two.
+
+        THE STILL IS A SCREEN, NOT THE PANE. Wadepic_ShowHiresAndFade
+        displays those planes at 640 x 400 and the scene holds there
+        on a music wait, so nothing the chunky pipeline draws is on
+        the display until the pull-back - 2.8. src/part_window.c
+        window_still samples the decoded image over whatever the
+        frame is, by the box each pixel covers: one texel a pixel at
+        scale 4, and the demo's own 4 x 4 mean at scale 1.
+
+   2.8 THE PULL-BACK. The camera pans away from the man and keeps
+        going, revealing how large the ship is.
+
+        THE RESOLUTION DROP IS REAL, AND IT IS THE SCENE'S ONE CUT
+        [verified, Wadepic_ShowHiresAndFade 0x002c9918]. The hold
+        shows Fwadepic at its own 640 x 400: that routine patches two
+        copper lists with eight bitplane pointers apiece, plane
+        stride 0x50 and the second list one interleaved row on at
+        +0x280 - 640 wide, eight planes, interlaced for 400 lines -
+        installs them at cop1lc and fades the picture up over 127
+        fields. Only then does it call Wadepic_DownsampleToTexture.
+
+        WHAT CUTS IS Space_DisplayOn (0x002d5410), which replaces
+        that copper list with g_CopperHam8, and
+        maybe_Space_RunWindowScene calls it only AFTER its
+        Music_WaitCue on (0x0c,0). So the picture is a hires SCREEN
+        for the whole hold and a 160 x 100 TEXTURE from the first
+        frame of the pull-back.
+
+        The texture is the 4 x 4 box filter - sixteen palette colours
+        summed a channel at a time and shifted down four for the
+        mean. The demo's own allocation sizes it: g_WadepicTexSize
+        declares 0x19000 bytes, 256 x 100 four-byte pixels, the same
+        layout as the snapshot that replaces it. From the cut onward
+        what looks like a further resolution drop is only the polygon
+        getting smaller. maybe_Space_RunWindowScene (0x002cceb4) runs
+        the scene in two phases split by one copy:
+
+            mode 4   render the window scene to g_pFrameBuffer
+            copy     g_pFrameBuffer -> g_pBillboardSnapshot
+            mode 5   render with object 11 textured from it
+
+        Nothing is re-rendered smaller. The mode 4 frame stops being
+        the framebuffer and starts being a surface, so the same
+        pixels come back through the texture mapper at whatever size
+        the polygon is. Uv_WriteBillboard11 (0x002d1638) is the hand-
+        over: per face it writes the snapshot pointer and three
+        (u,v) pairs from g_Billboard11Uv, which is two triangles
+        over 1,1 to 159,98 - the whole 160 x 100 frame inset by a
+        pixel.
+
+        THE PULL-BACK ACCELERATES, AND THAT IS THE WHOLE OF MODE
+        4'S TICK [verified, Anim_SceneTick mode 4]:
+
+            position += velocity
+            velocity += 9
+
+        seeded at Window_SeedPullBack as -0x5d00 and 0, with the
+        first loop running until the position taken >> 2 reaches
+        0x5000. So the camera leaves slowly and is still gaining
+        speed when the loop ends, which is about 153 ticks - the
+        reconstruction crosses the limit on tick 154.
+
+        MODE 4 DRAWS A TEXTURED POLYGON PAIR, NOT A BITMAP.
+        Window_DrawMode4Frame is one call to maybe_Scene_DrawPair,
+        which takes two scene slots from g_pWindowPairSlot through
+        maybe_Scene_TransformPair and Poly_DrawFaceList. So the
+        window is already a surface before the snapshot is taken,
+        and what the snapshot changes is only WHICH surface.
+
+        THE PAIR IS OBJECTS 19 AND 20 - THE SURROUND AND THE PANE
+        [verified]. Space_BuildObjects hands the pair slot
+        g_pSpaceDataBlocks + 19 * 12 and the slot after it + 20 * 12.
+        Object 20 is four vertices and two faces carrying the
+        downsampled picture, with literal UVs off g_Billboard20Uv
+        that cover the full 160 x 100. OBJECT 19 IS THE HULL THE
+        OPENING SITS IN: 158 faces, a sixth of every face in the
+        chunk, textured by Uv_ProjBoxish out of ship sub-block 2.
+
+        IT IS CLOSE-RANGE DETAIL AND NOTHING ELSE DRAWS IT. Object 19
+        is in no other scene's object list, so the panelling around
+        the window exists only for the seconds the camera is close
+        enough to see it; once mode 5 takes over, the same opening is
+        object 11's two triangles on the plain hull. That is why the
+        chunk holds one object far larger than any ship part, and why
+        it never appeared in any other part's geometry.
+
+        NEITHER OBJECT IS ROTATED. maybe_Scene_TransformPair brings
+        vertices down SIX bits rather than four, adds
+        g_PullBackScaled to comp1 as the depth, offsets x by
+        -0x4b4 - 0x50 and z by +0x3a2, and rejects at 0x1f4. So the
+        viewpoint is fixed and the two objects slide away from it.
+
+        THE PANE IS WIDENED AT BUILD TIME AND THE STRETCH
+        ACCUMULATES [verified, Pane_StretchX 0x002d128c]. The tail of
+        Space_BuildObjects takes every pane vertex through
+
+            c0 = (c0 * 0x10e) >> 8          270/256, about 1.0547
+
+        and the vertex block it edits is Fspacedata's own sub-block,
+        assigned without a copy - so each call to Space_BuildObjects
+        made while that chunk stays loaded stretches the pane again.
+        The surround is never passed through it. The window's build
+        is the second the chunk has seen: field 1291 for the space
+        scene before it against 3176 for its own [observed], which
+        carries the pane's c0 from the 0x2ce7..0x21089 on disk to the
+        0x31f1..0x24bec the transform reads.
+
+        That is what centres the picture. At the opening depth two
+        stretches put the pane's corners on (-3, 0) and (161, 100),
+        filling the frame a shade over both edges; one puts them on
+        -4 and 152, and the disk geometry on -4 and 143 - the
+        picture a tenth of a frame left of centre with its 160 texels
+        crushed into 147 pixels.
+
+        MODE 5 IS Space_DrawFullFrame'S LIST MINUS THE PLANET
+        [verified, Window_DrawMode5Frame]: the same nine latch
+        copies, then Scene_DrawTexturedSky,
+        Scene_ProjectAndDrawSun, Sprite_StampSaveUnder,
+        Scene_SortAndDrawAll, Sprite_RestoreSaveUnder, Flare_Draw
+        and maybe_Window_DrawMode5Tail, which is a bare rts - the
+        planet scenes put their horizon band at that position and this
+        scene draws nothing there, so the call list is fully
+        accounted for. g_SceneFuseTicks counts down from 0x3e80, 16000 ticks,
+        which is a fuse and not the length: the loop ends on
+        Music_PollCue.
+
+        MODE 5 IS 2002 TICKS, forty seconds [observed, on hardware,
+        frames 139 to 2141], and it is one unbroken move. The camera
+        comes off a Catmull-Rom spline whose keyframes share
+        Fspacedata with the geometry - formats/geometry.txt 6.2 -
+        walked two cursor steps a tick, so 128 ticks a keyframe and
+        keyframe 15 of the 26 filled ones by the end.
+        Window_DrawMode5Frame copies the spline's output straight
+        into the camera position, so for this scene the spline IS the
+        camera.
+
+        THE AIM POINT IS NOT THE VESSEL. CamPath_Walk rewrites both
+        of Camera_TrackTarget's offsets from the sine table every
+        tick, at indices that differ by a factor of two:
+
+            z offset = (sin[(cursor * 4) & 0x1fff] >> 3) - 0x2c3
+            x offset =  sin[(cursor * 8) & 0x1fff] >> 4
+
+        so what 0x002ccf40 seeds survives only as the z term's
+        offset, and the point being tracked traces a Lissajous figure
+        around the ship. The camera never quite settles on it, which
+        over forty seconds is what keeps an uncut orbit from reading
+        as a turntable.
+
+        TWENTY-THREE OBJECTS ARE DRAWN FROM A COUNT OF TWENTY-TWO,
+        and slot 8 - object 11, this scene's billboard - is the only
+        geometry the planet scenes hide. Both facts are
+        formats/geometry.txt 6.1.
+
+        THE HANDOVER IS SEAMLESS IN THE DEMO AND IS NOT YET IN THE
+        PORT. Mode 4's last frame scores 4.0 mean luminance error
+        against the demo's own framebuffer and mode 5's sixth frame
+        14.0 [observed, on hardware at frame 136 and 145]: the camera is
+        right - its yaw is within 4 of the demo's at the same cursor
+        and its pitch within 3, and the two converge by cursor 0x7fc -
+        but the frame is nearly empty where the demo's is full of
+        panelling.
+
+        THE DECAL ITSELF IS RIGHT. Object 11's four vertices read the
+        same out of guest memory as out of Fspacedata, and working the
+        demo's own transform by hand from its own camera puts the
+        first of them at (38, -28) - exactly what slot 8's projected
+        scratch holds [verified]. g_snap holds the final mode-4 frame
+        correctly too: 92 per cent lit, the surround with the small
+        bright pane in it.
+
+        THE DECAL IS DRAWN FROM MODE 5'S FIRST FRAME. A write watch
+        on slot 8's projected scratch fires from frame 139 - the frame
+        the mode becomes 5 - and every second frame after, always from
+        Scene_TransformProject's store [verified]. Nothing gates it,
+        and by cursor 0x22 it is a quad spanning x 22 to 144 and y 15
+        to 91: the decal fills most of the frame while the camera is
+        still at the window, which is what makes the handover read as
+        continuous rather than as a cut.
+
+        THE DEMO RENDERS EVERY SECOND VERTICAL BLANK. That watch fires
+        on alternate frames, so the scene runs at 25 Hz while
+        Anim_SceneTick advances at 50 - which is why the camera-path
+        cursor runs ahead of the rendered frame count, 484 advances
+        over 461 frames measured on hardware. A cursor
+        must be READ from g_CamPathCursor; keying a comparison on a
+        frame number lines up the wrong two frames and the error looks
+        like camera drift.
+
+        SCORED AGAINST THE DEMO'S OWN FRAMEBUFFER at four cursors read
+        out of g_CamPathCursor [observed]:
+
+            cursor    8      7.6      the handover
+            cursor 0x22      6.9      the decal at full size
+            cursor  968      6.5      mid sweep
+            cursor 2044      8.5      well outside
+
+        THE DEMO'S ANIMATOR RUNS AHEAD OF THE VIDEO FRAMES. It ticks
+        on VERTB, and over a measured span it advances 484 times for
+        461 frames, so a cursor must be READ from
+        g_CamPathCursor and never inferred from a frame count - a
+        comparison keyed on the frame number lines up the wrong two
+        frames and the error looks like camera drift.
+
+        The scene's light base is BLACK: maybe_Space_RunWindowScene
+        opens with Ham8_BuildTables(0, 0, 0), not the white the first
+        planet scene uses.
+
+        THE SNAPSHOT'S STRIDE IS 256 AND ITS IMAGE IS 160 WIDE. The
+        copy takes 256 longwords from each 160-longword source row,
+        so 96 pixels of the next row trail every one and the last
+        row reads 384 bytes past the framebuffer. Both are slop no
+        UV reaches; the power-of-two stride makes the mapper's row
+        address a shift instead of a multiply.
+
+   2.9 LOGO AGAIN, green, reading something like "gan ia wade
+        zone". 478 TICKS [observed, on hardware, frames 2141 to 2619
+        - the gap between the window scene leaving mode 5 and the next
+        ship scene entering mode 6], which is within ten of the 469
+        measured for 2.6.
+
+   2.10 THE ORB FORMS. Back on the ship. Lightning strikes from the
+        disc perimeter to three wedges and then inward to the centre
+        of the claw, and a sphere forms there. Many camera cuts
+        through the sequence.
+
+   2.11 THE CLAW CLAMPS. The six struts close on the sphere, which
+        spins with heavy glow and ray effects.
+
+   2.12 RELEASE. Several cuts of the sphere let go and falling
+        toward the planet.
+
+   2.12b THE ORB FALLS TO EARTH. The camera holds on the planet and
+        the sphere drops away toward it, shrinking into the
+        atmosphere. Space_RunEarth, anim mode 0xe -
+        effects/earth.txt.
+
+   2.13 THE SAND. Cut to a desert, opening from black bars. An Aztec
+        stone relief lies buried under dunes with a trail of
+        footprints across them; the sand blows away to reveal it, and
+        the sky flickers with distant lightning. Sand_RunScene
+        0x003132a4 - effects/sand.txt.
+
+   2.14 THE RUINS. A flyby of green mountains and Aztec ruins, with
+        heavy fog cutting the draw distance. Three camera cuts, and
+        the scene fades in from black over about three frames.
+        TempleModule_Run 0x003678d0 mode 0 - effects/temple.txt.
+
+   2.15 THE TEMPLE RISES. The sphere races to a temple among the
+        ruins and floats above it. It charges the temple, and the
+        temple lifts out of the ground - it is a giant spaceship.
+
+   2.16 THE ARK. Several cuts of that ship, which looks like Noah's
+        ark with an Aztec temple amidships, climbing into space.
+
+   2.17 THE PORTAL. A portal opens in space and the ark flies
+        through it. Heavy glow.
+
+   2.18 THE PORTAL CLOSES. Cut to the original ship with the planet
+        and sun in frame, and an explosion where the portal was.
+
+   2.19 THE DEBRIS. Debris rains down on the planet and explodes on
+        the surface. A grassy mountain landscape with birds flying,
+        being destroyed by the falling debris.
+
+   2.20 THE CITY. A city landscape takes a nuclear blast - the
+        shockwave crosses the screen and turns the buildings into
+        debris, which is a great many cubes. THREE DISTINCT CAMERA
+        CUTS of this. Some viewers believe it is pre-rendered;
+        nothing has been read either way.
+
+   2.21 THE PLANET DIES. Back to space with the original ship and
+        the planet in view. The explosion destroys the whole planet
+        and debris flies outward.
+
+   2.22 THE END. The ark flies off into a white light.
+
+3. The part list in code
+
+   THE DEMO IS SIX PARTS IN TWO ACTS [verified]. There is no flat part table
+   anywhere; this call sequence is the order.
+
+   Demo_RunAct1 (0x0021f7f4):
+       load the music module Cmodule1
+       D0 = 0 -> SpaceModule_Run
+
+   Demo_RunAct2 (0x0021f82a):
+       load the music module Cmodule2
+       0x003132a4              the relic module, init
+       D0 = 0 -> TempleModule_Run      CODE_06
+       D0 = 1 -> SpaceModule_Run
+       0x00313f6c              the relic module
+       D0 = 2 -> SpaceModule_Run
+       D0 = 1 -> TempleModule_Run
+
+   Three modules, each entered with a part index in D0: the space module at
+   CODE_03's start, the temple module at CODE_06's start, and the relic module
+   at 0x00313xxx. Every step is guarded by g_AbortFlag and branches to a common
+   exit, so one keypress unwinds a whole act.
+
+   ACT 1 IS ONE CALL AND IT IS THE WHOLE OPENING - everything from the first
+   frame to the orb forming. SpaceModule_Part0 runs:
+
+   +-------------------------------+---------------------------------+
+   | Space_LoadAssets,             | loading and display setup       |
+   | FUN_002ced9c, Display_Setup   |                                 |
+   +-------------------------------+---------------------------------+
+   | Space_RunSunScene             | 2.3, the planet and the sun -   |
+   |                               | all 2D, no geometry at all.     |
+   |                               | effects/planet_sun.txt          |
+   +-------------------------------+---------------------------------+
+   | D0 = 0, Logo_Run              | 2.2, a text screen              |
+   +-------------------------------+---------------------------------+
+   | maybe_Space_RunPlanetScenes   | 2.3 to 2.5, the planet and the  |
+   |                               | approach - TWO scenes           |
+   +-------------------------------+---------------------------------+
+   | D0 = 1, Logo_Run              | 2.6, a text screen              |
+   +-------------------------------+---------------------------------+
+   | maybe_Space_RunWindowScene    | 2.7 and 2.8, the captain's      |
+   |                               | window and the pull-back        |
+   +-------------------------------+---------------------------------+
+   | D0 = 2, Logo_Run              | 2.9, a text screen              |
+   +-------------------------------+---------------------------------+
+   | Space_RunPart                 | 2.10 to 2.12, the ship and orb  |
+   +-------------------------------+---------------------------------+
+   | Space_RunRelease              | the orb release -               |
+   |                               | effects/orb_release.txt         |
+   +-------------------------------+---------------------------------+
+   | Space_RunEarth                | the orb falls to Earth -        |
+   |                               | effects/earth.txt               |
+   +-------------------------------+---------------------------------+
+
+   THAT IS THE END OF SpaceModule_Part0, AND OF ACT 1. Demo_RunAct1
+   is one call, SpaceModule_Run(0) [verified, 0x0021f80c], so the
+   whole space sequence above is act 1.
+
+   ACT 2 OPENS ON THE SAND. Demo_RunAct2's first call is
+   Sand_RunScene at 0x003132a4 - effects/sand.txt - and only its
+   FOURTH is maybe_DunesModule_Run at 0x00313f6c, after a further
+   space section [verified, 0x0021f860 onward]. The two live in one
+   hunk and share no code; effects/dunes.txt covers the later one.
+
+   2.2 AND 2.3 RUN THE OTHER WAY ROUND FROM THE NUMBERING. Space_RunSunScene
+   comes before the first Logo_Run [verified], and it is 2.3's planet and sun
+   [observed] - so the running order is the terminal, the planet, then the logo.
+   The numbers above are kept as transcribed; the table is the running order.
+
+   Space_RunSunScene passes Ham8_BuildTables a base colour of (0,0,0), so its
+   light byte DARKENS, and that is how the planet gets on screen at all - see
+   effects/planet_sun.txt. Scene one of maybe_Space_RunPlanetScenes draws a sun
+   and a flare too but passes (0x3f,0x3f,0x3f) and brightens toward white.
+
+   2.3 IS ONE SCENE SPLIT ACROSS THE LOGO [observed]. The planet and sun return
+   immediately after it with the same backdrop and the same frame step for step,
+   the shadow gone and the base colour white. So the running order is the
+   terminal, the planet in shadow, the logo, then the planet lit - and 2.3's
+   description above covers both halves.
+
+   THE TERMINAL OF 2.1 IS A FLIPBOOK, AND IT GATES THE LOADER [verified].
+   Palette_Init installs Terminal_VblHook through Vbl_SetHook before act 1
+   begins, so Terminal_Tick (0x0033bc0c) runs once a frame from then on:
+
+       i = g_TerminalStep >> 1
+       f = g_TerminalScript[i]
+       if f < 0:                    ; the 0xffff terminator
+           g_TerminalStep -= 0x10   ; back EIGHT entries
+           f = g_TerminalScript[g_TerminalStep >> 1]
+           g_IntroDone = 1
+       g_TerminalStep += 1
+       Terminal_ShowFrame(f)
+
+   NO FONT, NO GLYPH BLITTER, NO CHARACTERS. Every state of the line is a
+   prerendered frame and the script only names which to show, which is why no
+   screen's wording is in the string table. Terminal_ShowFrame writes eight
+   bitplane pointers into the copper list and returns - a frame costs eight
+   pointer patches and nothing else.
+
+   THE SCRIPT INDEX IS THE STEP HALVED, so every entry lasts two frames. The
+   script, read out of the image:
+
+       1,1,1,1,0,0,0,0   x5        blink on the empty line
+       1,1,1,1,0,0,2,2
+       3,3,5,5,4,6,6,6
+       7,7,9,9,8,10,10,10
+       11,11,12,13,13,13,13
+       12,12,12,12,13,13,15,15
+       14,14,14,14
+       17,17,17,16,16,16
+       18,18,18,18,19,19,19,19   x4
+       0xffff
+
+   Frame 0 is the blank at g_TerminalBlank, which is all zeros [verified]. Odd
+   and even frames are the same text with and without its trailing cursor, so
+   alternating them is the blink and stepping to the next pair types a
+   character.
+
+   THE TERMINATOR DOES NOT STOP ANYTHING. It rewinds eight entries, and the last
+   eight are 18,18,18,18,19,19,19,19, so the cursor blinks on the finished line
+   for ever at eight frames a state.
+
+   THE RATE IS VERTICAL BLANKS. Terminal_VblHook (0x0033bc4c) is two
+   instructions - bsr Terminal_Tick, rts - and Vbl_SetHook installs it, so the
+   step rises once per VBL [verified]. An entry is 2 VBLs = 40 ms, a character
+   is one entry pair, and the four-entry tail states give a cursor 160 ms on and
+   160 ms off: a 3.1 Hz blink. See reconstruction.txt section 3 for what that
+   costs a host that ticks on its own refresh instead.
+
+   AND THAT IS THE LOADER'S GATE: reaching the terminator sets g_IntroDone, the
+   flag SpaceModule_Part0 blocks on after Space_LoadAssets. The text types while
+   relic.dat is read and the demo begins when the slower of the two finishes.
+
+   THE FRAMES ARE STORED 256 x 25, EIGHT PLANES, 19 of them, at
+   g_TerminalFrames. A frame steps 0x320 within a plane and a plane steps
+   0x3b40, so plane 0 holds every frame back to back before plane 1 begins -
+   frame-major inside each plane.
+
+   THE DISPLAY IS 192 x 24 AND THE REST IS PADDING [verified]. None of that is
+   in the code - Terminal_ShowFrame writes pointers and nothing else - it is in
+   g_CopperTerminal at 0x00367860:
+
+       BPLCON0 8011   HIRES, BPU3 set with BPU 0 - eight planes
+       DIWSTRT ec81   vstart 236, hstart 129
+       DIWSTOP 04c1   vstop  260, hstop  449
+       DDFSTRT 0070   lores 224 to 312: a narrow window inside
+       DDFSTOP 009c    that 320-lores span, not filling it
+       BPL1MOD 0000
+       FMODE   0007   64-bit bitplane fetch, 32-bit sprite
+
+   DIW gives the height outright: 260 - 236 is 24 of the stride's
+   25 rows. The DDF span comes to 24 bytes a row in every AGA fetch mode, so 192
+   of the stride's 256 pixels are fetched - and nothing in any frame inks past
+   x=135, well inside that.
+
+   THE STRIP IS EXACTLY CENTRED, which is the check on the whole derivation.
+   Fetched data appears 17 lores pixels after DDFSTRT*2, the delay a stock
+   screen's DDFSTRT 0x38 against hstart 0x81 also shows, so the 96 lores pixels
+   land at 241..337 against a window of 129..449. Both have centre 289.
+   Vertically the display opens at v=44, so line 236 is 192 rows down a
+   256-line PAL screen: the strip sits low, with the rest of the screen
+   background.
+
+   TAKING 0x320/32 FOR THE HEIGHT CORRUPTS FRAME 19 AND NOTHING ELSE. 25 looks
+   like the height and is not. Frame 19's row 24 begins at exactly +0x3b40, so
+   it reads plane p+1's row 0 and lays a strip of garbage under the line. Frames
+   1 to 18 have blank spare rows, and frame 19 is the one that loops for ever
+   with the cursor on it, so the fault shows only on the finished line. The
+   stride confirms 24: 18 frames of 0x320 plus 24 rows of 32 is 0x3b40 exactly,
+   the data ending on the plane boundary.
+
+   The 32-byte stride itself is not in the code either; it was recovered by
+   scoring row-to-row correlation across candidate strides, where it wins by a
+   wide margin, and DDF's 24 bytes agrees with it being the larger of the two.
+
+   THE PALETTE IS g_TerminalPalette, 256 longwords of 0x00RRGGBB, and EVERY
+   ENTRY IS A GREEN - the brightest about (21, 243, 21), index 0 black. There is
+   no colour cycling; the halo around the glyphs is painted into the eight
+   planes.
+
+   CODE_05 LAYS THE OPENING OUT AS ONE RUN, which is how the palette was found:
+   g_TerminalBlank is 0x320 bytes, g_TerminalPalette's 256 longwords are the
+   next 0x400, and g_TerminalFrames begins immediately after -
+   0x0034973c + 0x320 + 0x400 = 0x00349e60.
+
+   Rendered that way the line reads "10,191 - AD", typed one character at a time
+   behind a solid block cursor.
+
+   sim/terminal.py decodes the script, the palette and the frames straight out
+   of the executable, and sim/run.py plays it as part
+   1.
+
+   SCENES END ON THE MUSIC, NOT ON A FRAME COUNT. 0x0021ff3c arms a position in
+   the module and 0x0021ff64 polls whether the replayer has reached it;
+   maybe_Space_RunSunScene and several steps of Space_RunPart loop on exactly
+   that.
+
+   THE TEXT SCREENS ARE A RIPPLING SURFACE, NOT A BLIT. Logo_Run's frame loop is
+   four steps:
+
+   +-------------------------+-------------------------------------+
+   | Logo_DiffuseField       | one relaxation step over a height   |
+   | 0x0031033e              | field about 320 x 128               |
+   +-------------------------+-------------------------------------+
+   | Logo_DrawZoomedText     | the glyph image, scaled by 1/frame  |
+   | 0x00310576              | into the field                      |
+   +-------------------------+-------------------------------------+
+   | Logo_ShadeRefraction    | shade through the field's own       |
+   | 0x003104a4              | gradient                            |
+   +-------------------------+-------------------------------------+
+   | Logo_ChunkyToPlanar     | a plain c2p, triple buffered        |
+   | 0x00310792              |                                     |
+   +-------------------------+-------------------------------------+
+
+   THE SCENE OPENS WHITE AND ENDS BLACK, AND BOTH ARE THE PALETTE
+   rather than the picture [verified]. Pal_ScaleLongword 0x00310a58
+   builds every one of the 64 colours as
+
+       c = (c * g_PalFadeScale) >> 8        0x00310be2, from 0xff
+       c = min(0xff, c + g_PalFadeOffset)   0x00310be4, from 0xfe
+
+   and Logo_Advance steps the two in opposite circumstances:
+
+   +------------------+--------+------+---------------------------+
+   | Counter          | From   | Step | When                      |
+   +==================+========+======+===========================+
+   | g_PalFadeOffset  | 0xfe   | -2   | every field until it      |
+   |                  |        |      | reaches 0 - field 127     |
+   +------------------+--------+------+---------------------------+
+   | g_PalFadeScale   | 0xff   | -5   | only once g_LogoTicks is  |
+   |                  |        |      | 0x40 or below, so fields  |
+   |                  |        |      | 406 to 457                |
+   +------------------+--------+------+---------------------------+
+
+   So field 0's palette is the picture plus 0xfe, which saturates:
+   THE SCREEN IS WHITE BEFORE ANYTHING IS DRAWN - Logo_MainLoop calls
+   Pal_ScaleLongword once before its loop [0x00310304] - and the text
+   fades up out of the white over the first 127 fields. At the other
+   end the scale takes it to black on field 457, leaving 13 black
+   fields before the countdown ends the scene.
+
+   THE WHITE IS NOT AN OVERLAY and nothing is drawn twice. The same
+   one-line change to each colour does both ends, and a reconstruction
+   that fades the PICTURE instead has to fight the shader, which is
+   writing the field's own brightness into the same pixels.
+
+   ONE COUNTER DRIVES THE WHOLE EFFECT. g_LogoCounter starts at
+   0x32 or 0x96 and Logo_Advance adds g_LogoCounterRate - 6, 0xe or
+   0x18 by line count - once a frame. Logo_DrawZoomedText divides its numerator
+   by it, so the text shrinks as it climbs; Logo_DiffuseField injects 0x28 into
+   every cell while it has not passed g_LogoZoomLimit. The counter itself
+   never stops growing - Logo_Advance has no ceiling - and it is
+   Logo_DrawZoomedText that clamps it to the limit for its own divide
+   [verified, 0x003105e0], which is why the zoom and the ripple settle
+   together. The glow is the
+   refraction, not a blur.
+
+   g_LogoZoomLimit IS FIXED AND g_LogoCounter GROWS, and the two are easy to
+   swap. Read them the other way round and the zoom divides by a constant: the
+   text sits at its opening magnification for ever and the injection never
+   stops. Both still run and both look plausible, which is what makes it worth
+   stating.
+
+   At the limit the geometry closes exactly - a one-line screen reaches a step
+   that maps 521 of the art's 528 rows across the
+   320-pixel screen.
+
+   Logo_DiffuseField damps with `v -= v >> 4`, which is what makes it settle
+   rather than ring forever.
+
+   THE RELAXATION IS ONE FLAT LOOP OVER 40,959 CELLS AND NOT A LOOP OVER
+   ROWS [verified, 0x00310374]. Three source pointers are set to
+   cur - 1, cur - 321 and cur + 319, every read is an (An)+ and none of
+   them is ever reset, so 0x3554 iterations of three cells walk the
+   whole field in one pass. The stencil's +-1, +-320 and +-321 are
+   therefore FLAT offsets:
+
+       corners = c[-321] + c[-319] + c[319] + c[321]
+       edges   = c[-320] + c[320] + c[-1] + c[1]
+       v       = ((corners >> 6) + edges) >> 1
+       v      -= out[n] ; v -= v >> 4 ; v += 0x28
+
+   SO THE BORDERS RELAX LIKE EVERY OTHER CELL, and column 0's left
+   neighbour is the row above's last cell. That coupling across the row
+   ends is not visible in the picture, because the field either side of
+   a row break is at much the same level, but confining the loop to the
+   interior IS: the border cells then never damp while
+   Logo_ShadeRefraction keeps feeding them through its `field -= d - a`,
+   so they drift until the edge columns freeze into an imprint of
+   whatever art last crossed them - a glowing fringe down both sides of
+   the screen with the text's own shapes in it.
+
+   IT READS 321 CELLS PAST BOTH ENDS OF THE BUFFER and writes 40,959 of
+   the 40,960, so the last cell is never written either.
+
+   [open] WHAT LIES EITHER SIDE OF THE FIELD. The stencil reads it every
+   frame and it sets the first and last rows, but the buffers come from
+   the pool and reading them needs the demo stopped inside Logo_Run. The
+   reconstruction pads with zero, so its first and last rows relax
+   toward nothing.
+
+   Logo_Run indexes g_LogoVariants, a 3 x 16-byte table of three longword
+   offsets plus the variant index. THE OFFSETS ARE LINE ADDRESSES into
+   g_LogoLineArt (0x0031183c), and how many are non-zero decides the shape of
+   the screen [verified]:
+
+   +---------+---------------------------+----------------------+
+   | Variant | Lines, top to bottom      | Stamped at columns   |
+   +=========+===========================+======================+
+   | 0       | nerve axis                | 0x10                 |
+   +---------+---------------------------+----------------------+
+   | 1       | schlott / meson           | 0x28, 0x10           |
+   +---------+---------------------------+----------------------+
+   | 2       | zone / wade / ganja       | 0x40, 0x28, 0x10     |
+   +---------+---------------------------+----------------------+
+
+   The last three are member names; the readme credits Wade with pixelled art
+   and zONE with additional design.
+
+   EACH LINE IS 528 x 16 OF 1-BIT ART, 66 bytes a row, at
+   0x0031183c + the offset, with a 17th row of padding that brings the stride to
+   1122. A SET BIT IS THE LETTER [observed]: Logo_StampLine turns a set bit into
+   0x4f and a clear one into 0.
+
+   THE INK COUNTS DO NOT SETTLE THE BIT SENSE, which is the trap here. The art
+   stretches each screen's words across the same 528 pixels, so a ten-character
+   line is 77.5% set and a four-character line 37% - and that fits BOTH senses,
+   because fewer letters either means less ink or means bolder ones. Nor can the
+   art be eyeballed: the lettering is stylised to the point of being unreadable
+   at a glance in either sense. The sense was settled against the running demo
+   and nothing else.
+
+   THE LOGO SCREEN IS THE FULL 320 x 128 AND THERE IS NOTHING TO CLIP TO
+   [verified]. Three independent sources agree: g_CopperLogo at 0x00345478 sets
+   DIWSTRT 6c81 and DIWSTOP ebc1 - hstart 129 to hstop 449 is 320 lores pixels,
+   vstart 108 to vstop 235 is 128 lines; Copper_PatchPlanes6 steps the six
+   bitplane pointers by 0x1400, which is 40 bytes a row times 128 rows; and
+   Logo_ChunkyToPlanar's loop ends when its output pointer has advanced exactly
+   0x1400. BPLCON0 0x6001 is LORES with BPU 6, so 64 colours. Unlike the
+   terminal, no part of the buffer goes undisplayed.
+
+   THE ART IS STORED SQUASHED, sixteen rows to a line, and the display stretches
+   it about eight times vertically. Read at 1:1 it is unrecognisable, which is
+   how it hid: the stride and the boundaries were right long before anything was
+   readable.
+
+   Logo_StampLine TRANSPOSES as it writes - 16 columns of 528 into a buffer of
+   0x100-byte rows - and averages each cell with the one above, so an edge
+   reaches the field already soft. That running average is the seed glow.
+
+   The variant index separately selects a 0x400-byte block from g_LogoPalettes,
+   which Logo_SetPalette reads as 64 records of 0x10 bytes and uses the first
+   longword of each. So EVERY TEXT SCREEN HAS ITS OWN 64 COLOURS.
+
+   Logo_SetupVariant also gives each shape its own pace:
+
+       lines  0x310b90  0x310b94  0x310b98  0x310ba0  inject
+       1      0x348     0x3e800   0x28      0x14400   0x32
+       2      0x7d0     0xbb800   0x10      0x16800   0x96
+       3      0xaf0     0x177000  0x10      0x21c00   0x96
+
+   THE SHADING PASS FEEDS BACK INTO THE FIELD. It does not only read it:
+
+       d   = (the other chunky buffer + art) >> 3
+       i   = (field >> 5) + d            ; a BYTE add
+       out = ramp[i]
+       field -= (d - art)
+
+   so the surface keeps moving after the injection stops. Logo_BuildShadeRamp
+   (0x0031029e) makes that ramp - 1024 bytes of min(i, 0x3f), linear and
+   clamping at the screen's six planes. It is 1024 and not 256 because the index
+   is taken as a WORD and the add only carries inside the low byte.
+
+   SUBSTITUTING ANOTHER 256-BYTE TABLE OF THE RIGHT SHAPE DOES NOT WORK.
+   g_BlobFalloff's first row is 0 then 255 repeated - a step, not a ramp - and
+   shading through it drives every pixel to one colour.
+
+   src/part_logo.c carries all four steps. The c2p has no counterpart there:
+   with no chipset the chunky buffer IS the picture and the 64-colour palette is
+   looked up directly.
+
+   THE FIELD IS COMPUTED AND DELIBERATELY NOT DISPLAYED. Its injection is
+   uniform, so on its own it relaxes to a featureless dome - there is nothing to
+   look at until the shading pass refracts the art through its gradient, and a
+   false-colour view of it would show our choices rather than the demo's. The
+   part reports the field's range instead, which is enough to check the
+   relaxation: damping of v >> 4 against an injection of 0x28 puts equilibrium
+   at 640, and it climbs to 317 by tick 200.
+
+3.1. How long each part lasts, and what decides it
+
+   TWO MECHANISMS, NOT ONE. A part either counts its own ticks down or waits on
+   a music cue, and which it does is not obvious from watching it.
+
+   +--------------+--------+-----------+------------------------------+
+   | Part         |  ticks | decided by| evidence                     |
+   +==============+========+===========+==============================+
+   | 2.1 terminal |    242 | a script  | [verified] 0x0033bd18        |
+   | 2.2 logo     |    470 | a counter | [verified] 0x003100be        |
+   | 2.3 sun      |    430 | music cue | [observed] frames 93-523     |
+   | 2.3b planet  |    242 | music cue | [observed] frames 994-1236   |
+   | 2.4-2.5      |   1028 | music cue | [observed] frames 1242-2270  |
+   | 2.6 logo     |    470 | a counter | [verified] 0x003100be        |
+   | 2.7-2.8      |   2155 | music cue | [observed]                   |
+   | 2.9 logo     |    470 | a counter | [verified] 0x003100be        |
+   +--------------+--------+-----------+------------------------------+
+
+   The frame numbers are measured on hardware, from a write watch on
+   g_SceneMode: it goes to 3 for the sun scene, 0, then 2 for the lit planet, 0,
+   then 1 for the approach, and 0 again. The logo between the first two measured
+   471 against its own constant of 470, which is the boundary and not a
+   discrepancy.
+
+   2.4 AND 2.5 SHARE ONE FIGURE because the mode stays at 1 across both of
+   maybe_Space_RunPlanetScenes' second-half loops - the approach, which runs
+   while g_ApproachRange is positive, and the Space_DrawFullFrame loop after it,
+   which runs to a cue. The mode is only cleared once both are done.
+
+   THE GAP BEFORE 2.7 IS NOT ALL LOGO. Mode 1 clears on frame 2270 and mode 4
+   appears on 3229, which is 959 ticks for a 470-tick logo: the window scene's
+   setup then blocks on cue (12,0) through 0x0021ff50 before it draws anything,
+   and that wait is the rest.
+
+   THE THREE LOGO SCREENS ARE THE SAME 470 TICKS. Logo_SetupVariant seeds 0x1d6
+   into g_LogoTicks and the logo's own VBL hook takes one off per vertical
+   blank, with Logo_MainLoop running while it stays positive - so the count is
+   in the same unit as everything else here and does not depend on the variant.
+   Measuring 2.6 and 2.9 off the emulator gave 469 and 478; the 478 came of
+   timing the gap between two scene modes, which includes a scene's teardown and
+   the next one's setup, so the constant is the better number.
+
+   2.1 IS A FLIPBOOK SCRIPT AND A LOADING GATE. g_TerminalScript holds
+   121 entries before its 0xffff terminator and Terminal_Tick indexes it with
+   the step HALVED, so the typing finishes on tick 242 and sets g_IntroDone.
+   SpaceModule_Part0 blocks on that flag after Space_LoadAssets, so the part
+   lasts the LONGER of the typing and the relic.dat read - 242 is a floor, not a
+   length, and on a slow drive the cursor blinks on the finished line until the
+   load catches up. Past the terminator the script rewinds eight entries and
+   repeats 18,18,18,18,19,19,19,19 for ever.
+
+   THE SCENE PARTS ARM A CUE AND POLL IT. Each calls Music_ArmCue (0x0021ff3c)
+   with a position in D0 and a row in D1, then loops on Music_PollCue
+   (0x0021ff64) [verified]:
+
+       2.3        waits (1,0x10), ends (2,0x18)
+       2.3b-2.5   ends (4,0), then the approach ends (4,0x10)
+       2.7-2.8    waits (12,0), ends (21,0)
+
+   So their lengths are the module's, not the code's, and only a run settles
+   them. ONE CALIBRATION EXISTS: 2.7-2.8 spans D0 12 to 21 in
+   2155 ticks, which is about 239 ticks per unit of D0 [inferred] - enough to
+   sanity-check a measurement, not to replace one.
+
+3.2. Space_RunPart, the orb sequence, phase by phase
+
+   2.10 TO 2.12 ARE ONE ROUTINE. Space_RunPart (0x002cc590) is a linear script
+   of ten phases that walks g_SceneMode through 6, 0x13, 0x12, 0xa, 0xb and
+   0xc, and the only frame routines it uses are Scene_RenderFrame (0x002cd892),
+   0x002cd8fe and 0x002cd96e [verified]. IT RETURNS AFTER PHASE 10;
+   SpaceModule_Part0 then calls Space_RunRelease for the release scene
+   [verified, 0x002c83fa] - see effects/orb_release.txt.
+
+   THE GEOMETRY ARRIVES BY COUNTER, NOT BY LOADING. g_SceneObjectCount starts at
+   0x16 and the script raises it between phases, so the beams, the sprites and
+   the orb appear as the slots Space_BuildObjects already filled come into range
+   - formats/geometry.txt 6.1:
+
+    +----+------+-------+---------------------------------------------+
+    | ph | mode | count | ends on                                     |
+    +====+======+=======+=============================================+
+    |  1 |    6 |    22 | the fuse, 0xc8 - 200 ticks                  |
+    |  2 | 0x13 |    25 | 0x002e0ac4 climbing -0x32 to 0x20           |
+    |  3 | 0x13 |    34 | the fuse, 0x14 - 20 ticks                   |
+    |  4 | 0x13 |    37 | 0x002e0ac8 climbing 0 to 0x20               |
+    |  5 | 0x13 |    37 | the fuse, 5 ticks                           |
+    |  6 | 0x13 |    38 | music cue (0x19, 0)                         |
+    |  7 | 0x12 |    38 | music cue (0x1e, 0x34)                      |
+    |  8 |  0xa |  0x26 | music cue (0x20, 0)                         |
+    |  9 |  0xb |  0x26 | the fuse                                    |
+    | 10 |  0xc |     - | the fuse, 0x104 - 260 ticks                 |
+    +----+------+-------+---------------------------------------------+
+
+   PHASE 7 MEASURES 1382 TICKS, bracketed by stepping the mode word on
+   hardware: still 0x12 at 1375 frames and 0xa at 1388 [observed].
+   src/part_underside.c is part 2.11.
+
+   FOUR OF THE TEN END ON A CUE AND THEY ARE THE LONG ONES. A phase
+   with no fuse seeded keeps counting whatever the previous phase left
+   it, so its measured length says nothing about its rule - phase 6's
+   136 ticks are a stand-in for cue (0x19, 0) and nothing more. Phase
+   7, mode 0x12, is the from-underneath shot: effects/orb_underside.txt.
+
+   PHASE LENGTHS, MEASURED off a write watch on g_SceneObjectCount
+   [observed, on hardware]. THEY ARE NOT THE FUSES: each transition costs a
+   frame or two outside the loops, so phase 3's fuse of 20 measures 22.
+
+       frame    count   phase
+           7       22   1 begins
+         208       25   2 begins, so phase 1 is 201
+         290       34   3 begins, so phase 2 is 82
+         312       37   4 begins, so phase 3 is 22
+         352       38   6 begins, so phases 4 and 5 are 40
+         488        -   mode 0x13 ends, so phase 6 MEASURES 136,
+                           against a cue rather than a fuse
+
+   PHASES 2 AND 4 ARE THE TWO BEAM GROUPS GROWING, so their exit counters are
+   the beams' own strengths rather than a fuse: 0x002e0ac4 is g_BeamPhaseA and
+   0x002e0ac8 g_BeamPhaseB. How a beam is aimed, grown and drawn is
+   effects/orb.txt.
+
+   The fuse is g_SceneFuseTicks: Anim_SceneTick counts it down and raises
+   g_QuitRequested at zero, which is the flag each phase loop polls - so a phase
+   seeded with a fuse has a fixed length in ticks and one waiting on a cue does
+   not. PHASE 1 MEASURES 201 TICKS on hardware, frames 2619 to 2820, against
+   its fuse of 200 [observed]; mode 0x13 measures 280 across phases 2 to 6 and
+   mode
+   0x12 begins at 3100.
+
+   THE SCENE HAS ITS OWN CAMERA PATH AND ITS OWN LIGHT BASE. Ham8_BuildTables
+   takes (0x3f, 0x4f, 0x6f) - the green and blue arrive past the 0x3f00 clamp,
+   so the base is white and those two channels saturate first - and
+   CamPath_Setup is handed g_pSpaceDataBlocks' SECOND tail block rather than the
+   window scene's first. Phase 10 rebuilds the tables again at (0x5f, 0x5f,
+   0x7f) and applies a THIRD skip table at 0x002ccc24, which is where the
+   sequence leaves the ship.
+
+   MODE 6'S TICK IS THE SIMPLEST OF THEM. The cursor advances ONE a tick where
+   mode 5 advanced two, g_CamTrackOffsetZ climbs 0x14 a tick from -0xa00 so the
+   aim point rises, and 0x002e0bfc counts down from 0x32 to call
+   Strut_SetClawPose - so THE CLAWS BEGIN TO OPEN 50 TICKS IN. The horizon band
+   at the end of Scene_RenderFrame is switched off for the whole early sequence
+   by 0x002e0bf8 = 1 and only appears when phase 6 clears it.
+
+   PHASE 1'S CAMERA PATH IS IN THE EXECUTABLE, NOT IN relic.dat. Mode 6's arm
+   does lea (0x002eea14), A0 and indexes it as base + (cursor >> 8) * 12, with
+   t the cursor's low byte and the cursor advancing ONE a tick where mode 5
+   advanced two [verified]. The layout is the window path's - three longwords a
+   key, and a pre-entry at base - 12 duplicating key 0 because
+   CamPath_EvalCatmullRom wants a P[-1]:
+
+       P[-1]   0, -6998, 4000        the duplicate
+       P0      0, -6998, 4000
+       P1      12000, -12000, 9000
+       P2      18000, -11000, 10000
+       P3      22000, -10000, 10000
+
+   SO THE KEY NEVER CHANGES IN THIS PHASE. 200 ticks of a cursor stepping one
+   is t = 0 to 200 of 256, which is keyframe 0's segment and nothing more - the
+   camera leaves (0, -6998, 4000) and is at about (9449, -11176, 8038) when the
+   fuse ends. Nothing clamps the key, so a longer phase would walk on into the
+   table.
+
+   THE SETUP'S g_CamSrc IS NOT THE OPENING POSITION. Space_RunPart writes
+   (0x1c54, -0x3458, 0x25ab) but mode 6's first tick overwrites all three from
+   the spline, so that triple only feeds the two frames drawn before
+   Space_DisplayOn. Holding the camera there instead leaves it somewhere the
+   demo is never at and the aim swings in over the following seconds - which
+   reads as the camera snapping into position.
+
+   Verified against the demo at cursor 98 [observed, on hardware at frame 107]:
+   the position comes back (3937, -8797, 5707) on both sides to the unit, with
+   the latched yaw and pitch within a couple of ticks of easing.
+
+   src/part_orb.c covers phases 1 to 6 - 481 ticks - with the camera path, the
+   claw pose and the beams. Verified against the demo at tick 339 [observed,
+   frame 348]: the camera reads (14435, -12124, 9651) on both sides to the unit
+   and both beam strengths come back 88 and 34.
+
+   PHASE 3'S RAISE OF NINE IS THE THREE ENVELOPE SHELLS, three faces each,
+   and they arrive on the same tick as the six attach flares. The port draws
+   them from phase 3: its face count steps 228 to 237 at tick 284 [observed].
+   effects/orb.txt 9.
+
+   WHAT IS STILL MISSING IS THE ORB. It is a type 3 object drawn by the
+   branch at 0x002d2b3c, is not transcribed, and the demo's bright cluster in
+   the claw is the scene's largest remaining difference.
+
+   SCORED ON THE RGB CHANNELS ALONE: 11.2 at tick 276 and 18.7 at tick 340
+   [observed, on hardware at frame 285 and 349]. THE LIGHT CHANNEL IS NOT IN
+   THOSE FIGURES and every glow in the demo lives there and nowhere else, so
+   they measure the geometry and the textures and say nothing about the beams -
+   effects/orb.txt 4.
+
+4. What each part is tied to so far
+
+   +---------------------------+--------------------------------------------+
+   | Part                      | Evidence                                   |
+   +===========================+============================================+
+   | the space scene, 2.2-2.5  | Space_LoadAssets 0x002ced00 loads          |
+   |                           | Fspacedata, Fwadepic, Fplasma,             |
+   |                           | Fshiptextures, Fcrust, Fearth from one     |
+   |                           | name table at g_NameFspacedata [verified]  |
+   +---------------------------+--------------------------------------------+
+   | the spaceship's hull      | Fshiptextures, 4 textures; two render as   |
+   | surface                   | circular hull faces in the demo's own      |
+   |                           | colours [verified] - formats/textures.txt  |
+   +---------------------------+--------------------------------------------+
+   | the spaceship's shape     | Fspacedata objects 0, 2 and 3 are discs    |
+   |                           | with equal x and y extents; 12-17 are six  |
+   |                           | repeated struts [observed, from our own    |
+   |                           | render] - formats/geometry.txt section 5   |
+   +---------------------------+--------------------------------------------+
+   | the man at the window,    | Fwadepic is an IFF ILBM - it opens FORM    |
+   | 2.7                       | ....ILBM followed by an ANNO chunk         |
+   |                           | [verified]. Wade is credited with          |
+   |                           | "pixelled art", and the chunk is named for |
+   |                           | him                                        |
+   +---------------------------+--------------------------------------------+
+   | the asteroid, 2.4         | Fspacedata object 1 is a 32-face faceted   |
+   |                           | lump, the only object of that shape        |
+   |                           | [guess]                                    |
+   +---------------------------+--------------------------------------------+
+   | the planet and starfield  | Fspacedata object 20 is a flat quad with   |
+   |                           | an exactly zero y extent, which is what a  |
+   |                           | billboard looks like [guess]. Fearth is    |
+   |                           | named for a planet and does not render as  |
+   |                           | a plain texture at any width tried         |
+   +---------------------------+--------------------------------------------+
+   | a later temple / aztec    | a separate name table at 0x003e435c in     |
+   | part                      | CODE_06 asks for Ftempledata, Ftemplelog,  |
+   |                           | Fplasma, Faztectextures, Faztecterrain,    |
+   |                           | Fcrust [verified]                          |
+   +---------------------------+--------------------------------------------+
+   | the Relic itself          | Sand_Init 0x003132fa loads Frelicdata in   |
+   |                           | three sub-blocks of 0xa400, 0x2c0, 0xa000  |
+   |                           | [verified]. Which part this is has not     |
+   |                           | been placed in the sequence                |
+   +---------------------------+--------------------------------------------+
+
+   THE SPACE PART'S SEQUENCER IS Space_RunPart (0x002cc590) [verified]. It calls
+   Space_BuildObjects and then runs a scripted timeline: set a state, render,
+   wait on the flag at 0x00237230, set the next. Every wait also tests
+   0x00237232 and bails to a common exit - an abort, almost certainly a
+   keypress.
+
+   THE SHIP GROWS GEOMETRY BY RAISING A COUNTER [verified]. Every object is
+   built once at setup, and Scene_SortAndDrawAll draws only the first
+   g_SceneObjectCount slots - subsystems/ renderer.txt. Space_RunPart walks that
+   count up its timeline:
+
+       0x002cc622   = 0x16     the ship and the first beam group
+       0x002cc704   += 3
+       0x002cc752   += 9
+       0x002cc776   += 3
+       0x002cc7d8   += 1
+       0x002cc8ce   = 0x26     and Strut_ResetClaw straightens the
+                               struts three instructions later
+
+   So tentacles and spikes appearing partway through the part are not geometry
+   being created. They were always there and the renderer had not reached them
+   yet.
+
+   It is the first sequencer found. Whether the other parts have one each or
+   share a driver is not known, and nothing yet shows what calls Space_RunPart
+   itself.
+
+5. Open questions
+
+   o What is the actual part order in code? Section 2 is the order a
+     viewer sees; nothing confirms the demo runs a list in that order
+     rather than branching.
+   o Which parts are 2x2 and which are 1x1? o Where is the green terminal text
+   of 2.1, and the glowing logo
+     text of 2.3 and 2.6? Neither has been tied to a chunk, and
+     neither obviously needs one.
+   o Ftempledata is requested by the CODE_06 name table and is not in
+     relic.dat, the same way Cmodule3, Cmodule4 and Fpart1data are
+     not - formats/relic_dat.txt section 5. Four missing chunks across
+     three parts is a pattern, not a packaging slip.
+   o How many parts are there in total? The description above covers
+     the opening only.
+   o The orb's CLOSE-UP form is unread - the branch g_OrbNearMode
+     selects, which calls 0x002d1fdc and 0x002cdc3c. Fcrust is the
+     texture it carries, and the glow and ray casting around it are
+     not touched at all. subsystems/effects.txt section 5.
+   o WHAT RE-TEXTURES THE STRUTS? Mesh_DeformAndMap binds ship
+     texture 2 to all six at setup and nothing read so far changes
+     it, but the demo visibly gives them a different surface when
+     the glowing orb appears. The texture pointer lives at the
+     object's +0x4c region and a second writer has not been found.
+   o Which scene slot is which? Spike_BuildRing's seven instances
+     shift every index after 15, so the slot numbers used while
+     reading Space_BuildObjects are not the ones
+     Scene_SortAndDrawAll walks.

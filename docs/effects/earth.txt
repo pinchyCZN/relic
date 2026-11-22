@@ -1,0 +1,342 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                      THE ORB FALLS TOWARD EARTH
+
+
+Abstract
+
+   The short shot that closes the space sequence: the camera holds on
+   the planet and the sphere drops away toward it, shrinking.
+   Space_RunEarth at 0x002cc0ba, anim mode 0xe.
+
+   TWO THINGS HERE ARE NEW AND THE REST IS REUSE. The planet is a
+   texture BUILT AT RUN TIME, not a chunk, and its blue limb is baked
+   into that texture rather than drawn over the frame. Everything
+   else - the orb, its cracks, the fullscreen fill - is machinery the
+   release scene already uses, run with different parameters.
+
+Table of Contents
+
+   1. The Scene
+   2. The Planet Is Generated
+      2.1. A Light Sphere Lies Over The Whole Planet
+   3. What Is Reused, And How It Differs
+   4. The Rates
+   5. How It Joins The Shots Either Side
+      5.1. The Black After It Is A File Load
+      5.2. What A Music Cue Actually Is
+   6. The Port
+   7. Open questions
+
+1.  The Scene
+
+   SpaceModule_Part0 calls it straight after Space_RunRelease
+   [verified, 0x002c8426]. One mode, 0xe, and two loops:
+
+    +----+------+-------------------------+---------------------+
+    | ph | ends on                        | render              |
+    +====+================================+=====================+
+    |  1 | a music cue, 0x0021ff64        | Scene_RenderEarth   |
+    |  2 | g_Ham8ScrollY reaching 0x64    | Scene_RenderEarth   |
+    +----+--------------------------------+---------------------+
+
+   Phase 2 seeds g_Ham8ScrollY to 2 and runs until it reaches 100, so
+   the shot ends on a vertical scroll rather than a fuse or a cue.
+
+   THE SETUP IS WHAT MAKES IT A DIFFERENT SCENE [verified,
+   0x002cc0dc onward]:
+
+       g_OrbDepth         0x96     the orb starts near and recedes
+       g_CrackThreshold   0x7d0    the cracks CLOSE - see section 3
+       g_CrackPhaseA / B  0        both reset
+       g_CameraYaw/Pitch  0        a fresh orientation
+       g_WarpParamA       0
+
+2.  The Planet Is Generated
+
+   EARTH_BUILDTEXTURE MAKES IT IN THREE PASSES [verified,
+   0x002d3026] and nothing in relic.dat holds the result.
+
+   PASS ONE, 65536 texels, is a spherical remap of the SKY:
+
+       d = g_pSkyDirTable[0x20200 + i * 4] + 0x118, masked 0x3ffff
+       texel = g_pSkyTexture[d]
+
+   so the body of the planet is the skybox re-projected through the
+   same direction table Scene_DrawTexturedSky walks. That is why it
+   does not look like the lit planet of the earlier scenes - it is
+   not the same artwork.
+
+   PASS TWO stamps g_pEarthOverlay at +0x8c00, 0x5c rows of 0xf0
+   longwords on a 0x400 stride, SKIPPING ZEROS so the stamp carries
+   transparency. 92 x 240 four-byte pixels is 0x15900 bytes, which is
+   Fearth's size exactly - see formats/relic_dat.txt.
+
+   PASS THREE IS THE ATMOSPHERE, and it is baked into the texture:
+
+       r = Math_Isqrt(x*x + y*y)
+       v = abs((r - 0x41a) * 2), capped at 0xff
+       c = g_HaloRamp[v], each channel halved
+       texel += c
+
+   Because it is |r - 0x41a| the value peaks ON a circle and falls
+   away to both sides, so it is a LIMB GLOW and not a disc. It adds
+   rather than replaces, so it tints whatever the first two passes
+   left underneath.
+
+3.  What Is Reused, And How It Differs
+
+   THE BACKDROP IS THE SAME FULLSCREEN AFFINE FILL as the release's
+   hull shot. Warp_FullscreenRotate (0x002d3e94) is
+   Warp_FullscreenAffine instruction for instruction except that its
+   corners go through Gfx_Rotate2D instead of
+   Warp_ScaleRotateCorner - rotation without the scale. Both read
+   g_WarpParamA and g_WarpParamB; this one is handed
+   g_pEarthTexture. effects/orb_release.txt 6 has the fill's own
+   arithmetic, including the 24.8 index.
+
+   THE ORB IS STILL FCRUST. Earth_LoadCrustTexture reloads it and
+   points g_pOrbTexture at a second buffer [verified, 0x002cc1ea], so
+   the falling sphere is the same cracked ball.
+
+   AND THE CRACKS CLOSE. Crack_DrawShells culls a point unless BOTH
+   its sine lookups clear g_CrackThreshold, and this scene seeds that
+   0x7d0 where the release holds it at zero. Only points near the
+   sine peak survive, so the network thins to a few glowing seams as
+   the orb recedes.
+
+   WHICH ALSO WAKES Crack_DrawMidpointGlow. That routine does nothing
+   below a threshold of 0x64 [verified, 0x002cde4e] and so is inert
+   through the whole release; here it fires, dropping a glow blob on
+   each surviving edge's midpoint at half the orb's radius.
+
+   THE ORB'S OWN GATES ARE THE RELEASE'S. Scene_RenderEarth projects
+   it through Orb_ProjectAndFlare only while g_OrbDepth is at least
+   0x96, and draws the cracks only while the projected radius is
+   under 0x50 - the same two tests.
+
+4.  The Rates
+
+   MODE 0xe, one handler [verified, 0x002d5c66 Anim_SceneTick +0x578]:
+
+    +---------------------------+--------------------------+
+    | per tick                  | 0xe                      |
+    +===========================+==========================+
+    | g_WarpParamA              | -3                       |
+    | g_CameraYaw               | +0x28                    |
+    | g_CameraPitch             | +0xf                     |
+    | g_FlatScroll              | -0x200                   |
+    | g_CrackPhaseA             | +0x25                    |
+    | g_CrackPhaseB             | +0x53                    |
+    | g_CrackThreshold          | +0x1e                    |
+    | g_OrbDepth                | +0xa                     |
+    | 0x002e0c44                | +1                       |
+    | 0x002e0c48                | -(sin[0x002e0c44] >> 3)  |
+    +---------------------------+--------------------------+
+
+   THE ORB RECEDES BECAUSE THE DEPTH RISES - this is the only scene
+   where g_OrbDepth grows. The release drives it down by 2 a tick to
+   bring the orb at the camera; here it climbs 0xa and the sphere
+   shrinks away.
+
+   AND THE CRACKS CLOSE AS IT GOES. g_CrackThreshold starts 0x7d0 and
+   gains 0x1e a tick, so fewer points clear it every frame and the
+   seams wink out one by one as the orb falls.
+
+   VERIFIED AT TWO POINTS [observed, on hardware]:
+
+       +------+----------------+--------------------+
+       | tick | g_OrbDepth     | g_CrackThreshold   |
+       +======+================+====================+
+       |   31 | 460   = seed+310 | 2930 = seed+930  |
+       |  240 | 2550  = seed+2400| 9200 = seed+7200 |
+       +------+----------------+--------------------+
+
+   Both are exact against the seeds at both points, 209 ticks apart.
+
+   0x002e0c48 IS DRIVEN BY A SINE whose phase, 0x002e0c44, advances
+   one a tick: the handler subtracts g_SinTable[phase] >> 3 from it
+   each frame. Scene_RenderEarth reads it as the orb's x, shifted
+   right eight, so the sphere drifts sideways on a slow curve rather
+   than dropping straight.
+
+   PHASE 2 CLOSES THE DISPLAY WINDOW, not the picture - THAT IS THE
+   TRANSITION OUT OF THIS SCENE. While g_Ham8ScrollY is non-zero the
+   handler patches two words into 0x002d5380 and 0x002d5382:
+
+       DIWSTRT = ((0x3e + scrollY) << 8) | 0x83
+       DIWSTOP = ((0x02 - scrollY) << 8) | 0xbf
+
+   and adds 2 to the counter. So the top edge walks down and the
+   bottom edge walks up together, and the shot ends by squeezing to a
+   slit over the 49 ticks the counter needs to reach 0x64. The loop
+   is still rendering the scene behind it, which is why nothing white
+   is ever drawn: the picture is not covered, it is CROPPED.
+
+   THE WINDOW IS 196 SCANLINES OVER THE FRAME'S 100 ROWS, so each
+   edge takes one row a tick and the two meet exactly as the counter
+   lands on 0x64. A port with no display window paints the same bars
+   into the frame instead - that substitution is ours.
+
+   PHASE 1 ENDS ON A MUSIC CUE and so has no length of its own.
+   Space_RunEarth arms (0x29, 0x00) at 0x002cc13c and polls at
+   0x002cc158 until the replayer passes it [verified].
+
+   IT IS 323 FIELDS IN A CLEAN RUN, measured from the demo's first
+   frame: Scene_RenderEarth's first call and Music_PollCue's consume
+   are 865 and 1188 fields past the same point, and g_OrbDepth
+   reads 0x0d34 at the cue, which is 0x96 plus ten a field for 323
+   of them - two independent readings of the same number [observed].
+
+   IT IS NOT A CONSTANT OF THE SCENE. A different playthrough gave
+   601 for the same boundary, because how long
+   phase 1 lasts depends on where the music had got to when the
+   scene started. EA_PH2_AT carries 323 as the fallback a port with
+   no replayer needs; the cue is the mechanism.
+
+2.1.  A Light Sphere Lies Over The Whole Planet
+
+   WITHOUT IT THE TEXTURE'S DARK TEXELS READ AS HOLES.
+   Warp_FullscreenAffine copies WHOLE LONGWORDS out of the planet
+   texture, and the texture's light byte is zero in every texel - so
+   the warp alone leaves the frame with no light at all, and any
+   texel the planet's night side contributes comes out near black.
+
+   Scene_RenderEarth draws Space_DrawSunBlob 0x002d20fa over it
+   [verified, 0x002cdef0]: a radius-0x7f textured sphere written
+   into LIGHT ALONE, centred on Gfx_Rotate2D(-0xc, -0x7e) by
+   g_WarpParamA ^ 0x1fff, offset to the frame's 0x50, 0x32. At
+   190 fields into the shot the demo's own buffer reads 05 02 29 06
+   at the frame's corner - a texel whose colour is 5, 2, 6 and whose
+   LIGHT is 0x29, which is what stops it reading as a hole
+   [observed].
+
+   0x002d2218 IS A DATA BYTE, NOT SELF-MODIFIED CODE. It sits
+   immediately after that routine's rts and is read at 0x002d21dc as
+   a longitude bias; Scene_RenderEarth stages it to 0x5a before each
+   call. The second bias, subtracted twice, is (0x002e0bec) >> 2 -
+   the same yaw the orb's sphere uses.
+
+5.  How It Joins The Shots Either Side
+
+   IT OPENS WHITE AND FADES. Flash_FadeInFromOrbDepth, the last call
+   in Scene_RenderEarth [verified, 0x002cdb70]:
+
+       amt = g_OrbDepth - 0x140
+       if amt >= 0: nothing
+       every pixel: LIGHT = (-amt) >> 1      ; SET, not added
+
+   From the 0x96 seed that is 85 of LIGHT on the first frame, down to
+   zero at depth 0x140 - SEVENTEEN TICKS.
+
+   THAT IS THE OTHER HALF OF THE RELEASE'S ENDING, and it is the same
+   trick read backwards: Flash_SetLightFromOrbDepth closes the release
+   on the same global falling, and Space_RunRelease then calls
+   Space_FillWhite for a hard fill. So the two scenes meet AT white -
+   neither contains a whole transition, which is the pattern the
+   explosion and the release already set (effects/explosion.txt 4).
+
+   THE OTHER END IS NOT A FLASH. The shot closes on the display
+   window squeezing shut, section 4 - nothing writes white into the
+   frame for it.
+
+5.1.  The Black After It Is A File Load
+
+   WHAT HOLDS THE SCREEN BLACK IS NEITHER A CUE NOR A COUNTER. The
+   earth shot is the LAST thing in act one: Space_RunEarth returns
+   the moment g_Ham8ScrollY reaches 0x64, SpaceModule_Part0 patches
+   the copper with the window already shut and tears the module
+   down, Demo_RunAct1 frees its chunk list through 0x0021f93e, and
+   Demo_RunAct2 then reads act two's off relic.dat [verified,
+   0x0021f82a].
+
+   That read is real file I/O. 0x0021fab0 matches a 16-byte name
+   against the chunk table at 0x2c797c, Seeks (dos.library -66),
+   AllocMems (exec -186) and Reads (dos.library -42) - and flashes
+   COLOR00 red until the left mouse button if the allocation fails.
+
+   SO THE LENGTH IS I/O BOUND, not authored. Measured on hardware
+   [observed]:
+
+       +--------+------------------------------------------------+
+       | field  | what happens                                   |
+       +========+================================================+
+       |   21   | g_Ham8ScrollY seeded to 2, the window starts   |
+       |   70   | it reaches 0x64 - shut, and the shot returns   |
+       |  265   | g_SandCurtain cleared: act two is up           |
+       |  270   | the curtain starts opening, +1 a field         |
+       +--------+------------------------------------------------+
+
+   195 fields of free and load, then five of the sand scene's own
+   setup: 200 from shut to opening, four seconds at 50 Hz.
+
+   THE REPLAYER PLAYS STRAIGHT THROUGH IT. P61 runs off a CIA
+   interrupt, not the main loop, so the module does not pause for
+   the load and the next scene's music position is set by how long
+   this black lasts. A port that shortens it desynchronises
+   everything after it.
+
+5.2.  What A Music Cue Actually Is
+
+   Music_ArmCue 0x0021ff3c takes a SONG POSITION in D0 and a ROW in
+   D1, stores them at 0x002217bc and 0x002217be and clears the flag
+   at 0x002217c0. The replayer compares them once a row [verified,
+   0x00220dec]:
+
+       if armed_pos <= (0x0021ffa2) and armed_row <= (0x0021ffa6):
+           (0x002217c0) = 1
+
+   so 0x0021ffa2 and 0x0021ffa6 are the player's live position and
+   row, and the test is a floor on each rather than an equality.
+
+   Music_PollCue 0x0021ff64 reads the flag and clears it - OR
+   returns true outright while the left mouse button is held, which
+   is how the demo is skipped through.
+
+   A CUE IS THEREFORE A PAIR OF COUNTERS, not a pattern parse. A
+   reconstruction with no replayer can stand one in with a row
+   counter at the module's tick rate; what it cannot do is know the
+   module's own speed and pattern lengths without reading it.
+
+6.  The Port
+
+   src/part_earth.c is part 2.12b, and src/orb.c holds the sphere,
+   the crack network and the affine fill that it shares with the
+   release - the two scenes differ only in the parameters they hand
+   in, so the machinery is not duplicated.
+
+   THE PLANET IS BUILT FROM OUR OWN SKY. Space_SkyTexture and
+   Space_SkyDir expose the two tables space.c already generates, and
+   earth_build runs the demo's three passes over them. Nothing is
+   read from a capture.
+
+   TWO DIVERGENCES, BOTH DELIBERATE:
+
+   -  CRACK_DRAWMIDPOINTGLOW IS NOT DRAWN, so the blobs it would drop
+      on each surviving edge are missing from this scene. It is the
+      only place in the demo where that routine is live.
+
+   -  THE CUE IS A CONSTANT. EA_PH2_AT stands in for
+      Music_PollCue at 323, measured in a clean run; a part cannot
+      poll a replayer that is not there. It is the ONLY thing in
+      this shot that music decides - the close and the black after
+      it are not cue driven, section 5.1.
+
+   THE SHOT IS 592 TICKS, NOT 591. The demo's loop ends when
+   g_Ham8ScrollY REACHES 0x64, so the tick that writes 100 is still
+   drawn - fifty steps from the seed. Ending a tick early leaves the
+   middle two rows of the frame showing and the shutter never reads
+   as shut.
+
+   AND IT HOLDS 200 TICKS BLACK after that, section 5.1. The part
+   owns the hold because nothing else can: the demo's belongs to an
+   act boundary this port has no counterpart for.
+
+7.  Open questions
+
+   -  0x002cdf68, the draw Scene_RenderEarth makes between the sun
+      blob and the orb.
+
+   -  0x002cc21c and 0x002cc20e / 0x002cc236, the setup and teardown
+      pair, and what 0x002e0c44, 0x002e0c48 and 0x002e0c50 hold.

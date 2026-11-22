@@ -1,0 +1,555 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                 BEAMS, SPARKS AND GLOW: THE NON-MESH OBJECTS
+
+
+Abstract
+
+   The scene list holds more than meshes. Space_BuildObjects fills
+   twenty-one slots with Fspacedata geometry and thirteen more with
+   objects that carry a TYPE at +0x2c and are drawn by something
+   other than the polygon path.
+
+   The important finding is that the ship's lightning is not a
+   texture, a sprite, or canned geometry. It is generated every frame
+   from two sine lookups about a straight line, scaled by that line's
+   own length, and stroked as nine anti-aliased segments with a glow
+   blob at each node.
+
+   The second finding is about the pixel. Every one of these effects
+   writes BYTE +2 OF THE FRAMEBUFFER AND NOTHING ELSE, additively,
+   through a saturating lookup, and the HAM8 encode tables then fade
+   the pixel's three real channels toward a bright base colour by
+   that amount. It is a 6-bit light accumulator, not a colour.
+
+Table of Contents
+
+   1. The object types
+   2. Type 2: the beam
+   3. The bolt path
+   4. Type 1: the scaled sprite
+   5. The ball of light
+   6. Face mode 1 is translucent, not flat
+   7. Draw_Flare, and the rays
+   8. Particles
+   9. The glow blob, and byte +2
+  10. What cues them
+  11. The starfield is a direction lookup, not a scroll
+  12. Open questions
+
+1.  The object types
+
+   maybe_Scene_TransformAndDraw reads the type longword at +0x2c and
+   branches [verified]:
+
+   +------+----------------------+-------------------------------------+
+   | Type | Drawn by             | What it is                          |
+   +======+======================+=====================================+
+   | 1    | 0x002d4452           | one point, perspective-scaled       |
+   |      |                      | sprite - section 4                  |
+   +------+----------------------+-------------------------------------+
+   | 2    | Beam_Draw 0x002ca800 | a lightning bolt between two        |
+   |      |                      | points, plus sparks - section 2     |
+   +------+----------------------+-------------------------------------+
+   | 3    | Draw_GlowBlob        | the ball of light - ten blobs on a  |
+   |      | 0x002cefa4, ten times| sphere, section 5.1                 |
+   +------+----------------------+-------------------------------------+
+   | 4    | 0x002cf19e           | unread                              |
+   +------+----------------------+-------------------------------------+
+   | else | Scene_TransformProject + Poly_DrawFaceList - a mesh        |
+   +------+----------------------+-------------------------------------+
+
+   THE SHIP'S NON-MESH OBJECTS COME IN THREES [verified], which is
+   the same threefold symmetry as the three untextured mesh spikes at
+   objects 5, 6 and 7, and not the sixfold symmetry of the struts:
+
+       three  type 2, strength from g_BeamPhaseA
+       three  type 1, sizes from g_SpriteSizeTableA
+       three  type 1, sizes from g_SpriteSizeTableB
+       three  type 2, strength from g_BeamPhaseB
+       one    type 3
+
+   The slot indices are deliberately left out: Spike_BuildRing
+   builds seven instances inside Space_BuildObjects, so every index
+   after the master spike shifts by seven.
+
+   THE TWO BEAM GROUPS ARE A CHAIN, NOT A CHOICE [verified]. Each
+   beam's geometry is a count longword of 1 and two 16.16
+   object-space vertices, and in cylindrical terms:
+
+   +-------------------------+-----------------+------------------+
+   | Group                   | From            | To               |
+   +=========================+=================+==================+
+   | g_BeamGeomHullToSpike   | r=1.016         | r=0.664          |
+   | 0x002ee8a0, phase A     | z=-0.664        | z=+0.469         |
+   +-------------------------+-----------------+------------------+
+   | g_BeamGeomSpikeToOrb    | r=0.664         | r=0, z=+0.781    |
+   | 0x002ee8f4, phase B     | z=+0.469        | = g_OrbWorldPos  |
+   +-------------------------+-----------------+------------------+
+
+   each at 0, +120 and -120 degrees. The first group's end points
+   ARE the second group's start points, so the lightning walks from
+   the big disc's perimeter up to three points above it - the three
+   flat wedges at objects 5, 6 and 7 - and then inward to the orb.
+
+   Space_RunPart arms phase B only after phase A has reached full,
+   so the hull-to-spike arcs strike first and the spike-to-orb arcs
+   follow.
+
+   NOTHING MOVES THE ORB INTO THE CLAW'S GRIP. g_OrbWorldPos is
+   fixed at (0, 0, 0.781) and the beams are authored to end there.
+
+   The three sprites at g_SpriteGeomHull sit on the first group's
+   start points and the three at g_SpriteGeomSpike on its end
+   points, so both ends of every arc carry a glow.
+
+   sim/lightning.py carries all six as BEAMS_A and BEAMS_B, and
+   sim/run.py draws them on the ship page with the v key.
+
+2.  Type 2: the beam
+
+   Beam_Draw (0x002ca800) gets the object's first two PROJECTED
+   vertices from the caller and a strength in D7 [verified]:
+
+       A6 = (0x48,A0)              ; this object's particle array
+       Particle_UpdateAndDraw
+       if D7 < 0x20:  Beam_DrawGrowing ; rts
+       Beam_BuildBoltPath          ; 8 points into g_BoltPath
+       8 times: Draw_LineAA to the next point, make it current
+       one more Draw_LineAA back to the endpoint
+
+   D7 IS THE BEAM'S STRENGTH and it is read from the longword the
+   object's +0x34 points at - g_BeamPhaseA or g_BeamPhaseB. Below
+   0x20 the beam is still growing.
+
+   Beam_DrawGrowing (0x002ca9a0) is that growing phase:
+
+       D7 -= 0x10 ; if < 0 return
+       interpolate the endpoint to D7/16 along the line
+       spawn a particle there at a randomised size
+       blit
+
+   SO THE BEAM EXTENDS FROM ITS ORIGIN. D7 runs 0x10 to 0x20 over the
+   growing phase and the far end walks out to full length, shedding
+   sparks. Below 0x10 nothing is drawn at all, which is what the
+   negative start value of g_BeamPhaseA buys - a delay.
+
+3.  The bolt path
+
+   Beam_BuildBoltPath (0x002ca9e4) is the whole of the lightning
+   [verified]:
+
+       g_BoltLength = sqrt((dx)^2 + (dy)^2)
+       D6 = (g_BoltSeed & 0x3f) << 7
+       8 times:
+           p = lerp(start, end, D6>>8)
+           p.x += (sin[(D6>>1 + g_BoltPhase) & 0x1fff] >> 4)
+                    * g_BoltLength >> 8
+           p.y += (sin[(D6>>3 + g_BoltPhase) & 0x1fff] >> 3)
+                    * g_BoltLength >> 8
+           store p ; Draw_GlowBlob at p
+           D6 += 0x2000
+
+   TWO SINES AT DIFFERENT RATES. The x offset steps the table at half
+   the rate of the walk along the line and the y offset at an eighth,
+   so the two never come back into step and the result reads as
+   irregular rather than as a wave. There is no random number
+   generator in this routine at all.
+
+   SCALED BY THE LINE'S OWN LENGTH, so a bolt is the same shape near
+   and far rather than becoming a straight line at distance.
+
+   g_BoltPhase shifts both sines every frame - that is the crackle.
+   g_BoltSeed picks where the walk starts, so two bolts drawn in the
+   same frame do not trace the same path.
+
+   THE NODE RADIUS TAPERS ALONG THE BOLT:
+
+       r = max(4, abs(((0x10000 - d6/2) >> 11) * length >> 9))
+
+   d6 climbs from 0 to 0x10000 across the eight nodes, so the radius
+   falls - about 7 pixels down to its floor of 4 on a 120-pixel bolt.
+   That taper is why a bolt reads as a line with a halo rather than
+   as a row of lamps, and it is the argument Draw_GlowBlob takes.
+
+4.  Type 1: the scaled sprite
+
+   One vertex, rotated and perspective-divided like any other point,
+   then [verified]:
+
+       A1 = (0x30,A0)              ; an 8-entry size table
+       D1 = g_SpriteAnimCounter
+       g_SpriteAnimCounter += 1
+       D1 &= 7
+       D1 = A1[D1]                 ; pick a size
+       D1 = (D1 << 11) / depth     ; perspective
+       clamp to 0x7f
+       blit
+
+   THE COUNTER IS INCREMENTED ONCE PER SPRITE, NOT ONCE PER FRAME, and
+   it is a single global shared by every type-1 object in the scene.
+   So three sprites drawn in one frame take three CONSECUTIVE entries
+   of the table, and the group's pattern rotates by one each frame.
+   That is a cheap way to make a cluster flicker out of step, and it
+   means the effect depends on the draw order.
+
+   Two tables exist - g_SpriteSizeTableA at 0x002ee9a8 and
+   g_SpriteSizeTableB at 0x002ee9c8 - one per group of three.
+
+5.  The ball of light
+
+   The scene's single type-3 object is drawn by the branch at
+   0x002d2b3c and has two forms, chosen by g_OrbNearMode [verified].
+
+   Far, with the flag clear:
+
+       D7 = (0x002d2bf8) ; D6 = (0x002d2bfc)   ; running angles
+       TEN times:
+           a vector of length 0x2800 on the x axis
+           rotated by D7 and D6 -> a point on a SPHERE
+           plus the object's world position
+           project, Draw_GlowBlob size 0x1e with g_RampBolt
+           D7 += 0x333 ; D6 += 0x514
+
+   SO THE ORB IS TEN GLOWING POINTS ON A SPHERE, NOT A MESH. Nothing
+   in Fspacedata is spherical and nothing needs to be. The two
+   angles step by different amounts, so the ten points trace a
+   spherical spiral rather than a ring, and the stored pair advances
+   per frame, so the ball swirls.
+
+   Near, with the flag set, it takes a second form: project the
+   position, and if the depth is past 0x1f4 and the projected size
+   under 0x50, store the position and call 0x002d1fdc and
+   0x002cdc3c. That path is unread.
+
+6.  Face mode 1 is translucent, not flat
+
+   Three of the ship's objects - 5, 6 and 7, the wedges the
+   hull-to-spike lightning runs along - go through Uv_WriteFlatTable
+   rather than a projection. It sets every face's mode word to 1 and
+   copies six literal longwords from g_FlatUvTable, which are the
+   SAME triangle wound three ways: (0x7f,0), (0,0), (0x40,0x7f).
+
+   MODE 1 IS NOT UNTEXTURED. Poly_DrawFaceList sends it to
+   Rast_AdditivePoly (0x002cb3aa), whose span loop is [verified]:
+
+       D4w  = the interpolated v, high half
+       D4b  = the interpolated u, low byte
+       D4w += g_FlatScroll ; &= 0x7fff
+       D0b  = g_pFlatPattern[D4w]
+       D4w += g_FlatScroll ; &= 0x7fff
+       D0b += g_pFlatPattern[0x7f + D4w]
+       D4   = g_pFlatPalette[D0w * 4]
+       add.l D4,(A5)+
+
+   THE BLEND IS ONE 32-BIT ADD. R, G, the light accumulator and B
+   are added in a single instruction, so translucency costs nothing
+   beyond the lookup. It works because every channel is 6-bit and
+   the palette is pre-divided, so no byte carries into its
+   neighbour.
+
+   TWO SAMPLES, BOTH SCROLLED, so the wedge carries a moving
+   interference pattern rather than a static wash. FUN_002d5c66
+   decrements g_FlatScroll by 0x100 or 0x200 a frame - the same
+   routine that drives the beam phases.
+
+   NO BACKFACE TEST. Poly_DrawFaceList's mode-1 branch jumps
+   straight to the rasteriser once the three points are on screen. A
+   translucent surface has no back.
+
+   THE QUARTERING IS THE TRANSLUCENCY. Flat_ConditionTables
+   (0x002cff42) runs once per load and shifts both tables right by
+   two - the palette after masking 0xf8f8f8f8 so the shift cannot
+   carry between channels. Several wedges can therefore overlap
+   before a channel saturates. It is not idempotent, which is what
+   its guard is for.
+
+   The sizes are the contract: the pattern is exactly 0x8000+1
+   bytes, matching the 0x7fff mask, and the palette 0xc0+1
+   longwords, just past the 0x7e two quartered pattern bytes can sum
+   to.
+
+   SO THE WEDGES ARE THE GLOW THE LIGHTNING SITS INSIDE, not solid
+   geometry. sim/ draws them as flat grey and says so, because
+   g_pFlatPattern and g_pFlatPalette are loaded tables and which
+   chunk feeds them is not settled - see Open questions.
+
+7.  Draw_Flare, and the rays
+
+   Draw_Flare (0x002d4452) is THE MOST USED DRAWING ROUTINE IN THE
+   DEMO - seventeen distinct callers - and it is Draw_GlowBlob's
+   bigger sibling [verified]:
+
+       per pixel:
+           w   = g_PolarTable[(dy << 8) | dx]
+           d   = w low byte           ; the distance
+           a   = w high byte          ; the ANGLE
+           v   = g_BlobFalloff[radius << 8 | d]
+           a  += g_FlareRayPhase ; v -= rays[a]
+           a  += g_FlareRayPhase ; v -= rays[a]
+           add.l colour_ramp[v], (pixel)
+
+   TWO THINGS DIFFER FROM Draw_GlowBlob AND BOTH MATTER.
+
+   THE ANGLE TERM. Draw_GlowBlob uses only the polar table's low
+   byte, the distance. This also uses the high byte, the angle, to
+   subtract a per-angle amount - which is what carves rays out of an
+   otherwise round glow. That one table serves both is section 8.
+
+   IT IS IN COLOUR. Draw_GlowBlob writes byte +2 and nothing else.
+   This adds a whole longword - R, G, light and B in one add.l. So
+   the demo's monochrome glows go through Draw_GlowBlob and its
+   coloured ones through here.
+
+   7.1  The ray tables
+
+   Ray_BuildTables (0x002ca04c) makes three, each 256 words indexed
+   by the angle byte, ALL GENERATED WITH THE DEMO'S OWN LCG - so
+   they differ every run [verified]:
+
+   +---------------+--------------------------------------------+
+   | g_pRaySpikes  | 20 spikes at random angles, each a peak of |
+   |               | height 0..7 with a 5-wide taper            |
+   +---------------+--------------------------------------------+
+   | g_pRayArcs    | 20 arcs of random height and 20-35 degrees |
+   |               | width, then smoothed and NEGATED           |
+   +---------------+--------------------------------------------+
+   | g_pRayStreak  | two rays 180 degrees apart, hand written,  |
+   |               | 6/4/4/2/2 - an anamorphic streak           |
+   +---------------+--------------------------------------------+
+
+   THE NEGATION FLIPS THE SIGN AT THE CALL SITE. Draw_Flare
+   SUBTRACTS the ray value, so spikes DARKEN along their angles and
+   arcs BRIGHTEN along theirs. One routine, two opposite characters,
+   chosen by which table the caller passes.
+
+   The streak table is never cleared - ten entries are written and
+   the rest rely on the allocation being zeroed - and its loop
+   counter is loaded and never used.
+
+   7.2  The colour ramps
+
+   Ramp_BuildColour (0x002c9eac) makes 256 longwords with the same
+   inverse-square falloff the monochrome ramps use, tinted by a
+   triple and clamped to 0x3f a channel. Ramp_BuildAll makes six:
+
+       g_ColRampAmber        3f 2f 20   0x780000
+       g_ColRampMagenta      3f 2f 3f   0x500000
+       g_ColRampMagentaWide  3f 2f 3f   0x6e0000
+       g_ColRampPale         7f 7f af   0x960000
+       g_ColRampWarm2        3f 34 2d   0x500000
+       g_ColRampWarm         3f 34 2d   0x500000
+
+   THE ENTRY IS BUILT IN THE FRAMEBUFFER'S OWN PIXEL LAYOUT - R, G,
+   a ZERO where the light byte goes, then B - which is what lets one
+   add.l put it in without carrying between channels. It is also
+   independent confirmation of that layout, arrived at from the
+   other end.
+
+   The two values above 0x3f clamp, so g_ColRampPale saturates to
+   white sooner rather than being a brighter colour.
+
+   7.3  The span is the circle, not the box
+
+   Every blob and flare blitter reads a row half-width from
+   g_pSpanHalfWidth so a pixel outside the circle is never touched.
+   THAT IS NOT AN OPTIMISATION for Draw_Flare: g_BlobFalloff returns
+   255 outside the radius and a colour ramp's entry 255 is dim but
+   NOT zero, so walking the bounding box lays a faint square haze
+   around every flare.
+
+   src/gfx.c computes it as isqrt(r^2 - dy^2) instead - the same
+   circle the table holds, and exact at any scale where a tabled
+   half-width would quantise.
+
+8.  Particles
+
+   Particle_UpdateAndDraw (0x002ca962) walks FIFTY 8-byte records
+   from the pointer at the object's +0x48 [verified]:
+
+       if (A6).w <= 0: skip            ; dead
+       (A6).w -= 2                     ; lifetime
+       draw a glow blob at (0x2,A6),(0x4,A6) of size (0x6,A6)
+
+   THE PARTICLES DO NOT MOVE. The record is {life, x, y, size} and
+   there is no velocity in it and nothing integrates one. A spark is
+   struck at a point and fades where it was struck. Anything that
+   looks like motion comes from where new sparks are spawned, which
+   for a beam is the advancing endpoint.
+
+   The lifetime ticks down by 2, so a spark lives at most half as
+   many frames as its initial value.
+
+9.  The glow blob, and byte +2
+
+   Draw_GlowBlob (0x002cefa4) takes a centre and a radius, rejects
+   against 160 x 100 - the framebuffer, subsystems/renderer.txt -
+   and then per pixel [verified]:
+
+       v = fb[+2] + ramp[falloff]      ; ramp comes from the caller
+       fb[+2] = lut[v]                 ; saturating, at 0x002f0e50
+
+   IT WRITES BYTE +2 AND NOTHING ELSE. So does Draw_LineAA. Textures
+   leave that byte at zero, so a texture's zero is the absence of
+   light rather than a missing colour channel.
+
+   THE LIGHT BYTE IS 6 BITS. Ramp_BuildSaturate (0x002cff1e) builds
+   g_LightSatLut as min(i, 0x3f) and Draw_GlowBlob passes every sum
+   through it. Draw_LineAA does NOT - it sets the core pixel to 0x3f
+   outright and adds 0x0f to either neighbour with a raw byte add, so
+   crossing lines reach 0x5d. Ham8_BuildTables builds 128 light
+   levels, so that still lands inside the table.
+
+   WHAT THE BYTE DOES is decided in Ham8_BuildTables (0x002ca456),
+   not in any per-pixel code [verified]:
+
+       d5  = max(0, 0xff - 4*light)
+       out = min(0x3f00, base*256 + (c - base)*d5) >> 8
+
+   and all three of its output tables are indexed by a colour channel
+   PAIRED WITH THE LIGHT BYTE - (light, B), (G, light) and (R, light).
+
+   SO LIGHT FADES THE PIXEL TOWARD A BRIGHT BASE COLOUR. It is not
+   added as a fourth channel, not a separate bitplane, and costs
+   nothing at run time: the blend is baked into the encode tables and
+   the per-pixel work is the lookup the chunky-to-planar pass was
+   doing anyway. Light 0 leaves the texture's own colour; light 64
+   and over is the base colour outright.
+
+   Space_RunPart passes (0x3f, 0x4f, 0x6f) and later (0x5f, 0x5f,
+   0x7f). Every channel clamps at 0x3f, so a fully lit pixel is white
+   whichever way the three map onto R, G and B; the values above 0x3f
+   only make that channel reach white sooner, giving a blue-white
+   glow.
+
+   THE SHAPE AND THE BRIGHTNESS COME FROM DIFFERENT TABLES.
+   g_PolarTable (0x0029f97a) is 65536 words indexed by a signed
+   (dy << 8) | dx; its LOW byte is the distance from the centre and
+   its HIGH byte is the angle Uv_AtanLookup wants, so one 128K table
+   serves the UV generator and every glow blob. g_BlobFalloff
+   (0x002bf97a) turns (radius, distance) into a ramp index, and the
+   caller's ramp in A4 turns that into light:
+
+   +------------------+---------------------------+----------------+
+   | Ramp             | Built by                  | Used for       |
+   +==================+===========================+================+
+   | g_RampBolt       | Ramp_BuildLinear          | bolt nodes     |
+   |                  | min(0x3f, (0xff-i) >> 1)  |                |
+   +------------------+---------------------------+----------------+
+   | g_RampSpark      | Ramp_BuildInverseSquare   | sparks         |
+   |                  | D3 = 0x12c                |                |
+   +------------------+---------------------------+----------------+
+   | g_RampBeamHead   | Ramp_BuildInverseSquare   | the growing    |
+   |                  | D3 = 0x96                 | beam's head    |
+   +------------------+---------------------------+----------------+
+   | g_RampBoltHalf   | g_RampBolt, each entry    | unread caller  |
+   |                  | shifted right one         |                |
+   +------------------+---------------------------+----------------+
+
+   sim/lightning.py transcribes all of it and sim/run.py draws it on
+   the l page.
+
+10. What cues them
+
+   Space_RunPart (0x002cc590) is the space part's sequencer, and the
+   first part sequencer found in the demo. It sets a state, renders,
+   and waits on a flag at 0x00237230, with every wait also testing
+   0x00237232 and bailing out - an abort, almost certainly a key.
+
+   THE BEAM CUES ARE WAITS ON A COUNTER [verified]:
+
+       g_BeamPhaseA = -0x32 ; wait until g_BeamPhaseA >= 0x20
+       ...
+       g_BeamPhaseB =  0x00 ; wait until g_BeamPhaseB >= 0x20
+
+   Space_RunPart never increments them. FUN_002d5c66 does, by 1 a
+   frame. So the part arms a beam and blocks until it is at full
+   strength: 82 frames for the first, 32 for the second, about 1.6
+   and 0.6 seconds at PAL.
+
+   The first beam's -0x32 start means 50 frames pass before D7 even
+   reaches the 0x10 at which Beam_DrawGrowing draws anything.
+
+11. The starfield is a direction lookup, not a scroll
+
+   Scene_DrawTexturedSky (0x002d2db2) draws the sky a pixel at a time
+   out of a 256 x 256 longword table of texture offsets, indexed by an
+   interpolated screen DIRECTION [verified]. It is not a two-axis
+   scroll of a bitmap, and the difference is a whole axis.
+
+   Three screen corners are rotated by the latched head angle through
+   0x002d4132, a plain 14-bit rotation:
+
+       c1 = rot(-0x5000, -0x3200)
+       c2 = rot( 0x5000,  0x3200)
+       c3 = rot( 0x5000, -0x3200)        the walk starts here
+
+   (c1 - c3) / 160 is the per-column step and (c2 - c3) / 100 the
+   per-row one. Each pixel's 16-bit index takes its high byte from one
+   accumulator and its low byte from the other, reads the table, adds
+   a single offset and masks to 0x3ffff - which is Fplasma's size.
+
+   THE TWO SKY ANGLES ONLY SUPPLY THAT ONE OFFSET:
+
+       low byte   (g_CameraAngleLatched  * 2) >> 16
+       the rest   (g_CameraAngle2Latched * 2) >> 8,  times 4
+
+   so orientation and pan are separate mechanisms, and a
+   reconstruction that collapses them into one 2D offset gets two axes
+   right and loses the third.
+
+   THE HEAD ANGLE IS THAT THIRD AXIS, AND IT IS WHY THE ERROR HIDES.
+   maybe_Camera_MoveRotated accumulates it as
+
+       head += (yaw delta * sin(-pitch)) >> 6
+
+   so it barely moves while the camera is level and swings hard once
+   the camera is pitched. Fixed screen axes therefore look right for
+   the first half of the window scene and send the stars off on a path
+   of their own once the camera swings under the hull.
+
+   IT IS INHERITED BETWEEN SCENES, AND ONE SCENE EARNS ALL OF IT.
+   g_HeadAngle reads zero through the sun scene, through the lit
+   planet and at the approach's first frame, and 0x582e3 by the
+   approach's last [observed, on hardware at four frames spanning
+   the two scenes] - so the whole angle accumulates inside 2.4-2.5,
+   where
+   Anim_SceneTick starts calling Camera_TrackTarget once
+   g_ApproachRange reaches zero and the camera swings after the ship.
+   Nothing resets it afterwards: maybe_Space_RunWindowScene seeds its
+   own two parameters and leaves the head alone, so mode 5 opens on
+   0x5838d - 1411 of 8192 once shifted, about 62 degrees - and drifts
+   -83 a tick from there.
+
+   SO src/part_sun.c AND src/part_approach.c ARE RIGHT TO PASS ZERO,
+   src/part_portal.c is right to start from zero and accumulate, and
+   only src/part_window.c needs the constant seeded, because the port
+   runs its parts standalone and cannot inherit it.
+
+   THE D6 EACH CALLER LOADS IS DEAD. 0x002d4132 overwrites D6 with the
+   cosine before reading it, so the (0x002e0bb6) fetch ahead of every
+   call feeds nothing.
+
+12. Open questions
+
+   o What is type 4 (0x002cf19e)?
+   o WHICH CHUNK FEEDS g_pFlatPattern AND g_pFlatPalette? They are
+     pointers at 0x002e4834 and 0x002e4838, four and five entries
+     past the end of Fspacedata's 21 object triples in the table
+     Space_LoadAssets fills from 0x002e472c. No relic.dat chunk is
+     32769 bytes, so they are sub-blocks of a larger one. Until this
+     is settled the wedges cannot be coloured without inventing a
+     palette.
+   o WHICH OF Ham8_BuildTables' THREE BASE VALUES IS RED? The
+     packing before Ham8_TransposeLongword has not been unpicked. It
+     only changes intermediate light levels - a fully lit pixel is
+     white either way.
+   o What writes the particle arrays besides Beam_DrawGrowing? Fifty
+     slots per object is a lot for one spawner.
+   o Nothing yet ties the three type-2 beam objects to the three
+     untextured mesh spikes at objects 5, 6 and 7, beyond both being
+     threefold. The beams' endpoints come from their own two-vertex
+     geometry, which has not been dumped.
+   o The sprite size tables at 0x002ee9a8 and 0x002ee9c8 have not
+     been read out.

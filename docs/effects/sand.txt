@@ -1,0 +1,602 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                              THE SAND
+
+
+Abstract
+
+   The desert the orb lands in, at the top of act 2. Sand_RunScene at
+   0x003132a4 - the FIRST thing Demo_RunAct2 calls, straight after
+   act 1's space sequence ends with the orb falling to Earth.
+
+   IT IS A ONE-BYTE-PER-PIXEL FILTER over 320 x 128 in 256 colours,
+   not a texture copy and not voxels. A height map decides where
+   material still stands, an accumulator advects brightness leftward
+   a frame at a time, and two roxr steps feed each pixel back into
+   the next - that feedback is what makes it grain and drift. The
+   output byte IS the palette index, one to one.
+
+Table of Contents
+
+   1. Where It Sits
+   2. The Shots
+   3. The Renderer
+   4. The Tick
+   5. The Thunder
+   6. The Buffers
+   7. The Terrain, Built Once
+   8. The Present
+   9. The Palette
+  10. The Curtain
+  11. Checked Against Hardware
+  12. Open questions
+
+1.  Where It Sits
+
+   Demo_RunAct1 is one call, SpaceModule_Run(0) [verified,
+   0x0021f80c], and that is the whole space sequence through to the
+   orb's fall. Demo_RunAct2 then opens with Sand_RunScene
+   [verified, 0x0021f860], so the sand is the first thing after the
+   black break.
+
+   SAND_RUNSCENE IS SEVEN CALLS AND NOTHING ELSE [verified,
+   0x003132a4]:
+
+       Sand_Init            load, allocate, build the terrain
+       Sand_HookVbl         A0 = 0x00313dbc, the per-frame hook
+       Sand_ScreensOpen     the three chip-RAM screens
+       Sand_RunShots        section 2 - does not return until
+                            g_SandFade has run back to zero
+       Sand_ScreensClose
+       Sand_UnhookVbl
+       Sand_Free
+
+   SO THE TERRAIN OUTLIVES THE SCREENS. Sand_Init runs two calls
+   before any screen exists, which is why the dunes are already
+   built and eroding when the black bars open - section 7.
+
+   CONFIRMED AGAINST HARDWARE: the PC sits inside Sand_RenderFrame at
+   two separate points in the scene [observed, on hardware].
+
+2.  The Shots
+
+   Sand_RunShots [verified, 0x00313830] installs g_SandCopperList,
+   then:
+
+       g_SandFade = 0xff, 0x00313ed8 = 0
+       two render-and-present pairs
+       a music cue (1, 0x10), then 0x00313ed2 = 1
+       loop until the cue
+       g_SandFade = 0xfe, 0x00313edc = 0x270f
+       loop until g_SandFade reaches zero
+
+   SO THE EXIT IS A FADE COUNTER, not a frame count: the last loop
+   runs as long as g_SandFade stays above zero, and the scene before
+   it ends on a music cue.
+
+   MEASURED, THE CUE LANDS AT TICK 831 and the fade takes 127 more,
+   so the scene is 955 ticks - a little over 19 seconds of PAL
+   [observed, section 11]. A port cannot poll a music cue, so that
+   831 is the one number here it has to be told.
+
+3.  The Renderer
+
+   SAND_RENDERFRAME IS THE WHOLE EFFECT [verified, 0x003138de], 128
+   rows of 320 bytes:
+
+       level = (g_SandLevel << 4) - 0x1400, RISING 0x10 a pixel
+               across the row - so the waterline is a diagonal
+
+       per pixel:
+           acc[i] = acc[i + 8]            ; EIGHT WORDS AHEAD
+           v = source[i]
+           if height[i] >= level:
+               v       = shade[i]
+               acc[i] += (shade[i] >> 4) + 8
+           acc[i] -= 0xa
+           v = (v + max(acc[i], 0)) >> 1
+           v += wave[i]                   ; +0 past the first 320
+           clamp to 0xff
+           v += prev[i]          ;  roxr.b #1
+           v += out[i-1]         ;  roxr.b #1
+           out[i] = v
+
+   THE TWO ROXRs ARE THE EFFECT, AND THEY FEED BACK IN BOTH
+   DIRECTIONS. Each pixel is averaged with the SAME PIXEL OF THE
+   PREVIOUS FRAME and then with its own LEFT NEIGHBOUR, carry
+   included - one temporal tap, one spatial. Without them this is a
+   hard threshold against a height map; with them it grains across
+   the row and shimmers from frame to frame.
+
+   g_pSandOut AND g_pSandPrev ARE ONE DOUBLE BUFFER, swapped by
+   C2p_Chunky_To6Plane_b after every frame [verified, 0x00313aa4],
+   which is what makes the temporal tap the previous frame rather
+   than a table.
+
+   THE ACCUMULATOR ADVECTS LEFT; IT DOES NOT TRAIL RIGHT. acc[i] is
+   loaded from acc[i + 8], a cell the pass has not reached yet, so
+   it still holds the PREVIOUS FRAME's value - the whole accumulator
+   slides eight columns left per frame while decaying 0xa and
+   gaining where sand stands. The rightward smear in the picture
+   comes from the second roxr, not from here.
+
+   AND THE STORED VALUE IS NEVER FLOORED. Only the copy read out is
+   clamped to zero; acc[i] itself runs as negative as the decay
+   takes it, so ground bare for a long time stays dark for many
+   frames after sand returns to it.
+
+   ITS ROW STRIDE IS 336 WORDS, NOT 320. A5 walks 320 then skips
+   0x20, and 128 x 336 x 2 is 86016 - g_pSandAccum's allocated size
+   exactly. The 16-word pad per row is what lets the acc[i + 8] read
+   run past a row's end without reaching the next.
+
+   AND THE LEVEL IS A DIAGONAL, not a flat line: it rises 0x10 for
+   every pixel across the row, so the clearing sweeps rather than
+   dropping uniformly.
+
+   THE WAVE TERM IS A PER-PIXEL DITHER. A6 advances one word per
+   PIXEL straight through all 40960, reading g_pSandWave's 41280
+   words of rand(0x14) - so every pixel gets its own 0 to 19, and
+   g_SandPhase slides the whole field by up to 255 words a frame.
+
+4.  The Tick
+
+   SAND_TICK IS THE WHOLE ANIMATION [verified, 0x00313dde], once per
+   VBL off Sand_VblHook - section 8 - and it does nothing until
+   g_SandRunning is set, which Sand_RunShots does after its first
+   music cue.
+
+   THE CLEARING IS DELAYED, THEN LINEAR:
+
+       g_SandLevelDelay -= 1
+       if g_SandLevelDelay < 0xa0 and g_SandLevel < 0x250:
+           g_SandLevel += 1
+
+   so the sand holds still until the delay passes 0xa0, then clears
+   at one level a frame to a hard stop at 0x250. Section 3 turns that
+   into (level << 4) - 0x1400.
+
+   g_SandPhase gains 8 a frame, sliding the renderer's wave offset,
+   and g_SandFade drops 2 a frame once Sand_RunShots takes it off
+   0xff. g_SandFuse counts down to raise g_QuitRequested.
+
+   AND THE TAIL DOES THE OTHER TWO JOBS. Sand_WritePalette runs with
+   A6 = g_pSandSource (section 9), then g_SandCurtain gains 1 a
+   frame up to 0x3f (section 10) - so the bars open and the palette
+   is rebuilt on the same clock as the clearing.
+
+5.  The Thunder
+
+   THE DISTANT LIGHTNING IS A ONE-IN-A-HUNDRED ROLL PER FRAME, and
+   only while the scene is bright - g_SandFade >= 0xc8 [verified,
+   0x00313e0c]:
+
+       if rand(0x64) == 0:
+           g_SandFlashTicks = rand(5) + 4      ; four to eight frames
+       g_SandFlash = 0
+       if g_SandFlashTicks: g_SandFlash = 0x28, and count it down
+
+   AND IT IS A PALETTE EFFECT, NOT A FRAME ONE. The framebuffer is
+   untouched: Sand_WritePaletteEntry scales each channel by
+   g_SandFade and then ADDS g_SandFlash, saturating at 0xff
+   [verified, 0x00313d3a].
+
+   0x28 OF 0xff IS ABOUT A SIXTH, which is why it reads as lightning
+   somewhere off the horizon rather than as a flash on the scene -
+   every colour lifts together and nothing moves.
+
+   THE SAME ROUTINE CARRIES THE FADE-OUT. g_SandFade multiplies
+   before the flash adds, so the two compose: once the fade starts
+   the thunder stops firing at 0xc8 and what is already lit dims
+   away.
+
+   AND THE FLASH FREEZES RATHER THAN CLEARING. The clr.w of
+   g_SandFlash sits INSIDE the g_SandFade >= 0xc8 guard, so when the
+   fade crosses that line the flash keeps whatever value it held
+   [verified, 0x00313e36]. Caught mid-burst it stays 0x28 for the
+   rest of the shot, and since the fade multiplies first and the
+   flash adds after, the screen then settles at a flat 0x28 grey
+   instead of black.
+
+   THE DEMO CROSSES THE LINE WITH THE FLASH AT ZERO and fades to
+   true black [observed, on hardware run to the end]. Which way it
+   lands is decided by the generator's phase, so a transcription
+   only reproduces it by making the same number of draws - section
+   11.
+
+6.  The Buffers
+
+   RELIC_INIT FILLS THEM DURING THE BLACK BREAK [verified,
+   0x003132fa; observed at frame 216 off slot 4, which sits at the
+   previous scene's close]. It uses two different mechanisms and the
+   sizes are what tell them apart.
+
+   FRELICDATA IS LOADED AND SPLIT IN THREE. The loader takes the
+   name at 0x00313f20, the count-and-pointer block at 0x00313f04 and
+   the sizes at 0x00313f14:
+
+       0xa400 + 0x2c0 + 0xa000  =  0x146c0
+
+   which is Frelicdata's size on disk EXACTLY - the chunk is three
+   concatenated parts with nothing left over, and each one's size
+   identifies it:
+
+    +------------+--------------------+--------+--------------------+
+    | slot       | what               |  bytes | geometry           |
+    +============+====================+========+====================+
+    | 0x00313f08 | g_pSandSource      | 0xa400 | 320 x 128 + 0x400  |
+    | 0x00313f0c | g_pSandStamp       |  0x2c0 | 32 x 22 EXACTLY    |
+    | 0x00313f10 | g_pSandWindField   | 0xa000 | 320 x 128 EXACTLY  |
+    +------------+--------------------+--------+--------------------+
+
+   The first is 0x400 larger than the screen and Sand_RenderFrame
+   reads it at +0x400. THAT LEADING KILOBYTE IS THE PALETTE - 256
+   longwords, one per colour - and section 9 reads it. The second is
+   704 bytes and Sand_CarveStamp walks exactly 704 of them, 32
+   columns over 22 rows, which is what pins it down.
+
+   SEVEN MORE ARE ALLOCATED, not loaded, through Mem_AllocSubBlocks
+   with the sizes at 0x00313f50. THE COUNT COMES FROM A0's FIRST
+   LONGWORD, not from D1 [verified, 0x0021fdca] - D1 is cleared and
+   used as the zero fill. One block is taken for the total and the
+   seven pointers are written at the running offsets, so they are
+   contiguous.
+
+   THE SIZES ARE ALL MULTIPLES OF 320 x 128, which is 0xa000 and the
+   renderer's exact geometry:
+
+    +--------------+----------------------+--------+---------------+
+    | slot         | what                 |  bytes | per pixel     |
+    +==============+======================+========+===============+
+    | 0x00313f34   | g_pSandHeight        |  81920 | 2 - a WORD    |
+    | 0x00313f38   | g_pSandShade         |  40960 | 1             |
+    | 0x00313f3c   | g_pSandAccum         |  86016 | 2 plus slack  |
+    | 0x00313f40   | g_pSandOut           |  40960 | 1             |
+    | 0x00313f44   | g_pSandPrev          |  40960 | 1             |
+    | 0x00313f48   | g_pSandWave          |  82560 | 2 plus slack  |
+    | 0x00313f4c   | g_pSandWaveTable     |  32768 | 8192 longs    |
+    +--------------+----------------------+--------+---------------+
+
+   SO THE HEIGHT MAP IS A WORD A PIXEL, which is why
+   Sand_RenderFrame compares it against a level that reaches 0x250
+   shifted left four - a byte could not hold the range.
+
+   SO EVERY BUFFER THE RENDERER READS IS SCRATCH, filled by
+   Sand_Init's own routines - nothing but the three Frelicdata parts
+   comes off disk.
+
+       g_pSandHeight     Sand_BuildHeightSine, then
+                         Sand_BuildHeightTable, then eroded
+       g_pSandShade      Sand_ShadeFromHeight, from the gradient
+       g_pSandWaveTable  Sand_BuildWaveTable, the damped sine
+       g_pSandWave       Sand_BuildWave - 41280 words of rand(0x14),
+                         0 to 19, one per pixel with 320 to spare
+                         for g_SandPhase to slide into
+       g_pSandOut        the renderer itself
+       g_pSandPrev       the previous frame, by the C2P's swap
+
+   SAND_CARVESTAMP CUTS THE SLAB OUT, and it SUBTRACTS - it is the
+   erosion pass restricted to 32 x 22 and stripped of its bias
+   [verified, 0x003134c4]:
+
+       for 22 rows, 32 columns:
+           h = max(h - ((stamp[i] + stamp[i+1]) << 3), 0)
+
+   The same two-tap horizontal blur Sand_ErodeHeight uses, at twice
+   the scale and with no 0xa0 threshold, so every nonzero stamp byte
+   takes height away and none adds any.
+
+   SAND_STAMPFEATURES PLACES THE ONE SHAPE EIGHT TIMES and Sand_Init
+   runs that twice, so each site is carved to double depth
+   [verified, 0x00313442]:
+
+       0xe56    row   5 col 235      0xa6fc  row  66 col 254
+       0x3182   row  19 col 257      0xca2e  row  80 col 279
+       0x6368   row  39 col 244      0xfc12  row 100 col 265
+       0x7f1a   row  50 col 269      0x12e3e row 120 col 287
+
+   ALL EIGHT ARE IN THE RIGHT-HAND QUARTER and step rightward as
+   they descend, the last ending at column 319 exactly. Zero height
+   is below any waterline, so a carved cell shows g_pSandSource from
+   the first frame on.
+
+   THEY ARE FOOTPRINTS. Rendered, the eight read as a trail of
+   three-toed prints walking away across the dunes toward the top
+   right [observed].
+
+7.  The Terrain, Built Once
+
+   IT IS NOT AN ASSET AND IT IS NOT LIVE STATE. Four routines write
+   the height map and ALL FOUR ARE CALLED ONLY FROM SAND_INIT
+   [verified, xrefs to 0x00313582, 0x003136b6, 0x003133fc and
+   0x0031350e]. Nothing touches it again once the scene is running:
+   the clearing is g_SandLevel rising against a frozen map.
+
+   THE BUILD IS WHAT THE BLACK BREAK IS FOR. It walks 40960 pixels
+   twice with sixteen table lookups each, which takes several frames
+   - a write watch catches it still working at frames 216 through 225
+   measured from the previous scene's close [observed, on hardware].
+
+   SAND_BUILDHEIGHTSINE MAKES THE TERRAIN out of sixteen oscillators
+   and noise [verified, 0x00313582] - eight accumulators across and
+   eight down, all from zero:
+
+       a = 0 ; for each of the 8 column accumulators:
+                 a = (a + g_SinTable[(acc << 3) & 0x1fff]) >> 1
+       b = 0 ; the same over the 8 row accumulators
+       h = ((a + b + rand(0x12c)) >> 4) + 0x800
+
+   the column set advancing by 0xf, 0x11, 0x13, 0x4, 0x10, 0x20,
+   0x19, 0x7 per pixel and the row set by 0x19, 0xf, 0xc, 0x11, 0x8,
+   0xb, 0xf, 0x9 per row.
+
+   THE >>1 AFTER EVERY ADD IS WHAT SHAPES IT: each oscillator halves
+   what came before, so the last in each bank dominates and the
+   earlier ones survive only as finer and finer ripple. It is a
+   cascade, not a sum, and the two sets of increments are the
+   spatial frequencies.
+
+   AND THE TERRAIN IS THE SAME EVERY RUN. rand(0x12c) adds 0 to 299
+   a pixel before the >>4 - about 18 against a base of 0x800 - but
+   Sand_Init clears the generator's state to ZERO first [verified,
+   0x00313348], and the whole build consumes that sequence in a fixed
+   order. The dunes are therefore recoverable exactly, and have been:
+   see section 12.
+
+   SAND_BUILDWAVETABLE MAKES THAT SUBSTITUTE WAVEFORM [verified,
+   0x00313394], 8192 longwords of sine under a QUARTIC envelope:
+
+       ramp = ((0x1fff - i) & 0xfff) ^ 0xfff   ; 0xfff to 0, TWICE
+       v = g_SinTable[i], then (v * ramp) >> 12 three times
+                          and  (v * ramp) >> 10 once
+
+   which is sin(i) times (ramp / 4096) to the fourth. That is near
+   zero over most of each half and climbs steeply only at its end -
+   181 at a quarter, 4096 at a half, 14661 at three quarters - and
+   the ramp runs TWICE, so the table holds two windowed bursts
+   rather than one period of anything.
+
+   A WAVEFORM FLAT OVER MOST OF ITS SPAN AND SPIKED AT THE END gives
+   the dunes long smooth stretches broken by sharp ridges, where a
+   plain sine would give even ripple.
+
+   SAND_BUILDWAVE FILLS ALL 41280 WORDS [verified, 0x003133de]. dbf
+   ends at -1, so move.l #0xa13f is 0xa13f + 1 iterations, and 41280
+   words is 0x14280 bytes - the buffer's allocated size exactly.
+
+   ITS CALL COUNT IS LOAD-BEARING, NOT JUST ITS VALUES. Sand_Tick
+   draws the thunder from the same generator, so a transcription
+   that fills a different number of words leaves every later roll
+   out of phase: the flash is then frozen at a different value when
+   g_SandFade crosses 0xc8 and the scene can fade out to a flat grey
+   instead of to black. Section 11 is the measurement that settles
+   the count.
+
+   SAND_SHADEFROMHEIGHT LIGHTS THEM FROM THEIR OWN SLOPE [verified,
+   0x0031350e]:
+
+       dx = (height[i] - height[i-1]) >> 1
+       dy = (height[i] - height[i - 0x140]) >> 1
+       shade = clamp(dx + dy + 0x80, 0, 0xff)
+
+   There is no light vector anywhere - the sum of the two slopes IS
+   the lambert term, biased to mid-grey, which is why the dunes read
+   as lit from a fixed corner. Sand_RenderFrame uses the result as
+   its a3 source, the value it substitutes wherever material still
+   stands, so the brightness of standing sand is the shape of the
+   ground beneath it. Sand_Init reruns it after every pass that
+   changes the height.
+
+   SAND_BUILDHEIGHTTABLE IS THE SAME ROUTINE WITH ONE SUBSTITUTION
+   [verified, 0x003136b6]: its column bank reads g_pSandWaveTable
+   where the first reads g_SinTable. Sand_Init runs it later, so
+   this is the terrain that survives, and g_pSandWaveTable's 8192
+   longwords are a custom waveform standing in for one sine period
+   of the real table.
+
+   SAND_ERODEHEIGHT EATS IT FROM A STATIC FIELD [verified,
+   0x003133fc], 128 rows of 320 words against g_pSandWindField a
+   byte at a time - the whole map, where Sand_CarveStamp is the same
+   arithmetic over 32 x 22:
+
+       d = ((field[i] * 8) + (field[i+1] * 8)) >> 1 - 0xa0
+       height[i] = max(height[i] - d, 0)
+
+   THE FIELD IS A RATE, NOT A MASK. It averages each byte with its
+   right neighbour, scales by 8 and subtracts 0xa0 - so a source byte
+   above 20 EATS the height and one below 20 ADDS to it. Sand is
+   carried off where the field is high and piles up where it is low,
+   which is what makes the clearing follow the ground's pattern
+   rather than sweeping flat.
+
+   FLOORED AT ZERO AND NEVER CAPPED, so ground once stripped stays
+   stripped while a sheltered pixel keeps gaining.
+
+   SO THE CLEARING IS ONE CLOCK OVER A FIXED SHAPE. g_SandLevel is
+   a waterline that rises on its own (section 4) across a height map
+   nothing touches again - what the sand follows as it goes is the
+   pattern the erosion left, not a process still running.
+
+   AND WHAT IT UNCOVERS IS A CARVED STONE SLAB. g_pSandSource is an
+   Aztec relief - a circular calendar motif with a panel of stepped
+   pyramid glyphs across its middle - which the sheet of sand strips
+   away from as the level rises [observed].
+
+8.  The Present
+
+   THREE SCREENS IN ONE CHIP-RAM BLOCK [verified, 0x003139fe].
+   Sand_ScreensAlloc asks Mem_Alloc for 0x1e018 bytes of
+   MEMF_CHIP|MEMF_CLEAR and cuts it into three of 0xa008, which is
+   eight 0x1400 bitplanes - 320 x 128 at 40 bytes a row - plus a
+   longword. ALL EIGHT ARE WRITTEN AND ALL EIGHT ARE DISPLAYED:
+   the interleave reads 8 longwords, 32 pixels, per pass and stores
+   8, at draw + 0x1400 * n for n = 0..7 [verified, the stores at
+   0x00313b82 through 0x00313cd4]. A six-plane reading of it misses
+   the two at 0x00313b82 and 0x00313bc2 and costs the top two bits
+   of every colour index.
+
+   THE TABLE IS FIVE LONGWORDS, NOT THREE, and the two repeats are
+   the trick:
+
+       g_SandScreenTable[0..2] = base, base+0xa008, base+0x14010
+       g_SandScreenTable[3..4] = base, base+0xa008
+
+   C2p_Chunky_To6Plane_b indexes it at +0 and at +8 with the same
+   g_SandScreenIndex, so the +8 read lands two screens along with no
+   modulo anywhere - the wrap lives in the table. Triple buffering
+   for the cost of two spare longwords.
+
+   PER FRAME, BEFORE ANY BIT MOVES [verified, 0x00313a5c]:
+
+       g_SandScreenIndex += 4, wrapping to 0 at 0xc
+       g_pSandScreenShown = table[index + 8]
+       g_pSandScreenDraw  = table[index]
+       g_FrameSyncFlag = 0xff ; spin until Sand_VblHook clears it
+       swap g_pSandOut with g_pSandPrev
+
+   so the frame being converted now is shown two frames later and
+   the copper never points at the buffer being written.
+
+   THE SWAP IS WHAT MAKES SECTION 3's TEMPORAL TAP WORK. There is no
+   dither table; g_pSandOut and g_pSandPrev are one double buffer
+   with two names, and the renderer's A4 term is therefore the frame
+   it drew last time.
+
+   Then the usual 68020 planar interleave - eor/lsr against
+   0x33333333, 0x0f0f0f0f and so on.
+
+   SAND_VBLHOOK IS WHAT RELEASES THE SPIN, and it took finding
+   because nothing reaches it by a control-flow path: Sand_HookVbl
+   stores it in g_pVblHook and Ghidra left all 32 bytes as undefined
+   data, so the flag had no clearing xref at all [verified,
+   0x00313dbc]:
+
+       g_VblFlag += 1
+       if (g_FrameSyncFlag) {
+           g_FrameSyncFlag = 0        ; an sf
+           Sand_UpdateCopper()        ; ONLY when a frame is pending
+       }
+       Sand_Tick()                    ; every VBL regardless
+
+   SO THE SCENE HAS TWO RATES. Sand_Tick advances the animation once
+   per VBL whatever the renderer is doing, and the copper is
+   re-pointed only on the VBLs where a finished frame is waiting - a
+   render that overruns a frame gets TWO ticks, not one. The sand
+   clears by wall clock, not by rendered frames, which is what a
+   transcription has to reproduce if its own frame rate differs.
+
+9.  The Palette
+
+   256 ENTRIES, REWRITTEN EVERY FRAME, AND THE SOURCE IS FRELICDATA.
+   Sand_Tick calls Sand_WritePalette with A6 = g_pSandSource
+   [verified, 0x00313e78], so the 0x400 in front of the source image
+   is 256 palette longwords - which is what makes part 1's size
+   0x400 + 0xa000 = 0xa400, its size on disk.
+
+   A longword is (unused, R, G, B). The low byte is handled first
+   and three ror.l #8 steps walk B, G and R, leaving the top byte
+   alone [verified, 0x00313d24].
+
+   SO THE DEMO'S COLOURS ARE ON DISK AND NEED NO GUESSING. Section 5
+   has what happens to each channel on the way to the hardware - a
+   multiply by g_SandFade and an add of g_SandFlash, both per
+   channel, both saturating.
+
+   AND 256 IS THE RIGHT NUMBER because the display really is eight
+   bitplanes: BPLCON0 in g_SandCopperList is 0x0011, which is BPU3
+   set with BPU[2:0] zero - AGA's spelling of eight - plus ECSENA
+   [verified, 0x003454ec]. Sand_RenderFrame's output byte is
+   therefore the palette index, one to one, with no truncation
+   anywhere.
+
+10.  The Curtain
+
+   THE OPENING BARS ARE A DISPLAY-WINDOW EFFECT. Not one black pixel
+   is drawn; DIWSTRT and DIWSTOP are patched in the copper list and
+   the plane pointers are moved to compensate [verified,
+   0x0031398a]:
+
+       DIWSTRT = ((0x9e - g_SandCurtain) << 8) | 0x83
+       DIWSTOP = ((0x9e + g_SandCurtain) << 8) | 0xc1
+
+       base = g_pSandScreenShown
+              + (0x40 - g_SandCurtain) * 0x28 + 0x28
+       for 8 planes:  write base, base += 0x1400
+
+   g_SandCurtain runs 0 to 0x3f, one a frame off Sand_Tick's tail
+   [verified, 0x00313e82], so the window grows symmetrically about
+   line 0x9e from nothing to 0x5f..0xdd, 126 lines.
+
+   THE +0x28 PER STEP IS WHAT KEEPS THE PICTURE ANCHORED. 0x28 is
+   one row of 40 bytes, so every line the window gains at the top is
+   matched by one row the plane base loses - row 65 of the buffer at
+   curtain 0, row 2 at curtain 0x3f. Without it the image would
+   slide down as the bars opened.
+
+   IT IS THE MIRROR OF THE SCENE BEFORE. The orb's fall closes with
+   bars meeting in the middle; this opens with them parting from it.
+   See effects/earth.txt.
+
+11.  Checked Against Hardware
+
+   THE HEIGHT MAP MATCHES THE RUNNING DEMO WORD FOR WORD. A
+   transcription of the build chain, run from a cleared generator,
+   was compared against g_pSandHeight read live on hardware
+   [observed]:
+
+       first 32 words      all 32 identical
+       last 32 words       31 of 32 identical
+
+   One test covers the whole chain, because any error anywhere in it
+   changes every word after that point: the LCG and its bit
+   extraction, both oscillator banks and the per-row reseed, the
+   quartic wave table that pass two substitutes, eight carves run
+   twice, and two erosion passes.
+
+   THE ONE DIFFERENCE IS THE LAST PIXEL OF THE MAP, and it is the
+   demo reading off the end of its own data. Sand_ErodeHeight takes
+   field[i] and field[i + 1], so at i = 40959 it reads the byte after
+   g_pSandWindField - uninitialised memory, which held 4 in that run,
+   twice over four is the 0x20 the two words differ by. It is not
+   recoverable from the files and inventing it would be worse than
+   the pixel.
+
+   THE LIVE BUFFER LAYOUT IS SECTION 6's [observed, on hardware]: the
+   count at 0x00313f30 is 7, the seven pointers run contiguously at
+   the sizes listed, and g_SandScreenTable holds five longwords whose
+   last two repeat the first two.
+
+   AND THE GENERATOR PINS THE WHOLE CALL SEQUENCE. g_SandEcx is a
+   plain LCG from a cleared seed, so its live value names the exact
+   number of draws the demo has made. It read 0x10dc69ae, which is
+   call 124066 [observed, on hardware run forward 936 frames], and
+
+       2 x 40960   the two height passes, one draw a pixel
+         + 41280   Sand_BuildWave, one draw a word
+           + 866   Sand_Tick's thunder rolls to that point
+       = 124066
+
+   is that number exactly. It is a sharper check than the height map
+   because it also counts the draws that leave no trace in it - and
+   it is what settles Sand_BuildWave's extent, a short fill being
+   40960 calls adrift.
+
+   THE SCENE IS 955 TICKS, cue plus fade [observed]. Hardware
+   read g_SandFuse 0x26f8, so that sits at tick 23; 900 frames on,
+   g_SandFade was 0x46 with the fuse reset to 0x26b3 - 92 ticks into
+   a fade that had begun at tick 831. 36 frames further it reached
+   zero, 127 ticks in all.
+
+12.  Open questions
+
+   -  The exact AGA packing in Sand_WritePaletteEntry's tail. The
+      scale-and-flash arithmetic is read (section 5) and the source
+      is read (section 9); the nibble split into the two banked
+      writes is not.
+
+   -  What the music cue at tick 831 actually is. The tick is
+      measured and Sand_RunShots polls 0x0021ff64 for it, but the
+      replayer is out of scope.
+
+   -  0x0021ff9a, which Sand_Init sets to 1 before anything else.

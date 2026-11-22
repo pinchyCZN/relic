@@ -1,0 +1,717 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                      THE PLANET AND THE SUN
+
+
+Abstract
+
+   Scene 2.3, the screen between the terminal and the first logo: a
+   planet silhouetted against a sun, with a lens flare that fades as
+   the sun crosses the frame. Not one polygon is drawn - the whole
+   scene is 2D compositing into a 160 x 100 four-byte framebuffer,
+   and the planet itself is written into the light accumulator rather
+   than into any colour.
+
+Table of Contents
+
+   1. Where It Runs
+   2. The Frame, In Eight Steps
+   3. The Screen Is 160 x 100
+   4. The Shadow Is Darkness, And It Opens The Scene
+   5. The Sun
+   6. The Lens Flare
+   7. What Moves, And The Rotating Rays
+   8. The Additive Sprite Blend
+   9. The Sky Is An Environment Map, And It Is Generated
+  10. What Is In The Reconstruction
+  11. Open Questions
+
+1.  Where It Runs
+
+   Space_RunSunScene (0x002ce81e) is the first thing
+   SpaceModule_Part0 runs after the loader's gate releases, before
+   the opening logo [verified]. The terminal of 2.1 is still typing
+   while relic.dat loads; this is what replaces it.
+
+   +-----------------------------+----------------------------------+
+   | Ham8_BuildTables(0, 0, 0)   | base colour BLACK                |
+   | Mem_AllocSubBlocks          | g_ScenePool, MEMF_FAST           |
+   | maybe_Sun_BuildBodySprite   | the 64 x 64 body, procedural     |
+   | maybe_Sun_BuildBodyMask     | its 1-byte-per-pixel mask        |
+   | g_SceneMode = 3             |                                  |
+   | loop Space_SunSceneFrame    | until a music cue                |
+   +-----------------------------+----------------------------------+
+
+   THE BASE COLOUR IS THE WHOLE TRICK. Ham8_BuildTables blends every
+   pixel toward the base by its light byte, so a base of (0,0,0)
+   makes the light byte DARKEN. Space_RunPart passes (0x3f,0x4f,0x6f)
+   and gets the opposite sense out of the same byte, and
+   maybe_Space_RunPlanetScenes passes (0x3f,0x3f,0x3f). The light
+   byte's meaning is per scene, never global - see
+   subsystems/display.txt.
+
+   THIS SCENE IS THE FIRST HALF OF A SCENE SPLIT ACROSS THE LOGO.
+   Scene one of maybe_Space_RunPlanetScenes is the same backdrop
+   again after the logo - the same sky, planet, halo and flare, the
+   same frame routine step for step - with the shadow sweep gone and
+   the base colour white, so the sun has emerged and lights the
+   scene [observed]. See effects/approach.txt.
+
+2.  The Frame, In Eight Steps
+
+   Space_SunSceneFrame (0x002ce938) latches the camera and position
+   state and then calls, in order [verified]:
+
+       Scene_DrawTexturedSky          0x002d2db2
+       Scene_ProjectAndDrawSun        0x002d2742
+       Sprite_StampSaveUnder          0x002d1a2e
+       Scene_DrawPlanetAndHalo        0x002ceaf8
+       Sprite_RestoreSaveUnder(0)     0x002d1e08
+       Flare_Draw                     0x002cf2aa
+       Scene_DrawShadowSweep          0x002cea48
+       maybe_Scene_DrawHorizonBand    0x002d2530
+
+   THERE IS NO Scene_SortAndDrawAll, which is the evidence that the
+   scene holds no geometry at all [verified]. Every other scene in
+   act 1 calls it.
+
+   THE SAVE-UNDER PAIR IS AN OCCLUSION COUNTER, which is not what
+   its name suggests. Sprite_StampSaveUnder (0x002d1a2e) walks a
+   12 x 12 mask at 0x002d1d78 centred on the flare, saves each
+   framebuffer pixel it covers into 0x002d1b38, and writes 0x00008000
+   over it - a LIGHT byte of 0x80, chosen because nothing else in the
+   scene sets bit 7 of that byte.
+
+   Scene_DrawPlanetAndHalo then draws the planet opaquely over part of
+   it. Sprite_RestoreSaveUnder (0x002d1e08) tests the LIGHT byte of
+   each cell and restores only the ones where bit 7 SURVIVED - that
+   is, the ones the planet did not cover - and counts them. So the
+   count is how much of the sun is still visible past the planet, and
+   the mean of the surviving positions is where the visible part sits.
+
+   That count drives g_SunRange, which is why one parameter runs the
+   whole scene:
+
+       n       = surviving cells, doubled, clamped to 0xb3
+       target  = n < 0x82 ? n : 0x82 - (n - 0x82)      folded
+       g_SunRange += (target << 8 - g_SunRange) / 4
+
+   and when nothing survives at all, g_SunRange eases toward zero by
+   HALVES instead of quarters and the second flare below is skipped.
+
+   SO DRAW_FLARE RUNS TWICE A FRAME, not once, and the two calls differ
+   in every argument:
+
+   +----------+------------------+-------------------+----------------+
+   | Call     | Ray table        | Ramp              | Radius         |
+   +==========+==================+===================+================+
+   | Project- | g_RayArcs        | g_ColRampWarm     | 0x50 - range   |
+   | AndDraw- | 0x002f102c       | 0x002eef90        | >> 8, SKIPPED  |
+   | Sun      |                  |                   | when <= 0      |
+   +----------+------------------+-------------------+----------------+
+   | Restore- | g_RaySpikes      | 0x002eeaf0        | range >> 8     |
+   | SaveUnder| 0x002f1028       | warm + one hump   |                |
+   +----------+------------------+-------------------+----------------+
+
+   The two are complements: as the sun emerges the first shrinks to
+   nothing and the second grows. Both tables were confirmed against the
+   running demo - g_RayArcs matched all 256 entries and g_RaySpikes its
+   nonzero run at 52..58.
+
+   THE RAMP AT 0x002eeaf0 IS g_ColRampWarm PLUS A BLUE HUMP. Ramp_BuildAll
+   builds both from the same (0x3f, 0x34, 0x2d, 0x500000), then passes
+   0x002eeaf0 through 0x002c9e80 with 0xaa. That pass adds
+   max(0, 8 - ((i' ^ 4) >> 6)) with i' = (255 - i) - 0xaa to the LOW BYTE
+   of each entry - and the low byte of a pixel is B - so entries 81..89
+   gain 4 to 8 of blue and nothing else changes.
+
+   AND THE SECOND FLARE IS NOT CENTRED ON THE SUN. RestoreSaveUnder sums
+   the positions of the surviving cells, divides by the count, and passes
+   that MEAN to Draw_Flare [verified, 0x002d1e7e..0x002d1e88]. So the
+   glow sits on the visible part of the sun and leads it out from behind
+   the planet rather than staying with its centre.
+
+3.  The Screen Is 160 x 100
+
+   Scene_ProjectAndDrawSun's two offsets are the only place the
+   scene's resolution is written down [verified]:
+
+       g_FlareScreenX = (x << 8) / z + 0x50
+       g_FlareScreenY = (y << 8) / z + 0x32
+
+   0x50 and 0x32 are 80 and 50 - half of 160 and half of 100.
+   Scene_DrawShadowSweep agrees from the other direction: it runs 100
+   rows and rejects any x at or past 0xa0, and its row stride is
+   0x280, which is 160 pixels at four bytes each.
+
+4.  The Shadow Is Darkness, And It Opens The Scene
+
+   Scene_DrawShadowSweep draws no colour. Per row, for y from -0x32
+   to 0x31:
+
+       x = isqrt(10000 - y*y)                  a RADIUS-100 ARC
+       d = g_PlanetScreenX - g_FlareScreenX
+       x += g_PlanetScreenX + 3*d
+       x -= 1 ; skip the row if negative
+       light = 0xa
+       loop, dbf on x so it COUNTS DOWN to zero:
+           if (x < 0xa0) frame[x].LIGHT = light
+           light = min(light + 2, 0x40)
+
+   It writes byte +2 of the four-byte pixel and never touches R, G
+   or B. The scene's base colour is black, so that light darkens.
+
+   THE LOOP WALKS LEFT, AND THAT IS THE WHOLE BEHAVIOUR. dbf
+   decrements, so the shadow lies to the LEFT of the arc and deepens
+   away from it, and the light steps whether or not the pixel was on
+   screen - so an arc off the right edge arrives with the ramp
+   already clamped at 0x40, which against a black base is total
+   black.
+
+   SO THE SCENE OPENS BLACK AND IS UNCOVERED FROM THE RIGHT. At the
+   first frame the offset puts the arc past 0xa0 and the whole
+   screen is dark; as Anim_SceneTick drifts the sun right the offset
+   shrinks, the arc crosses leftward, and the frame is revealed
+   behind it. The arc bulges right at mid-height, so its edge is a
+   backwards C matching the planet's curve [observed].
+
+   RUNNING THE LOOP RIGHTWARD INVERTS THE SCENE EXACTLY, and both
+   directions look like a shadow: it opens clear and ends swallowed
+   instead. The direction is in the dbf, not in the arithmetic.
+
+   THE OFFSET CARRIES THE SUN'S POSITION. x is displaced by
+   g_PlanetScreenX plus three times the gap between planet and
+   flare, which is what ties the reveal to the sun's drift - the
+   only thing in the scene that moves.
+
+   RADIUS 100 IS THE SCREEN'S FULL HEIGHT, so this is not the
+   planet. The planet is the 64 x 64 sprite of section 5. The name
+   Scene_DrawVignette fits a frame darkening but not an isqrt, a
+   radius, or an offset that follows the sun.
+
+5.  The Sun
+
+   Two things draw it, and they are separate.
+
+   Scene_ProjectAndDrawSun rotates (g_SunWorldX, g_SunWorldY)
+   against a z of 0xfa0 through maybe_Math_Rotate2D_b, rejects a
+   non-positive z as behind the camera, divides for perspective, and
+   calls Draw_Flare with g_pRayArcs and g_ColRampWarm. The radius is
+   0x50 - (g_SunRange >> 8), so the sun shrinks with range and is
+   skipped entirely once that reaches 0x5000.
+
+   Scene_DrawPlanetAndHalo draws the planet and its atmosphere in
+   two passes that blend differently [verified]:
+
+   +--------+--------------+-------+-----------------------------+
+   | Pass   | Source       | Size  | Blend                       |
+   +========+==============+=======+=============================+
+   | one    | g_pPlanetRgb | 64x64 | masked OPAQUE copy          |
+   +--------+--------------+-------+-----------------------------+
+   | two    | g_pPlanetHalo| 80x80 | ADDITIVE, light byte too    |
+   +--------+--------------+-------+-----------------------------+
+
+   THE PLANET IS A PLAIN 2D SPRITE AND IT IS IN THE EXECUTABLE, not
+   in relic.dat: g_PlanetSprite at 0x002e5290, 64 x 64 at four bytes
+   a texel, 6 bits a channel with the light byte zero throughout. It
+   is a crescent-lit sphere with its terminator painted in.
+
+   ITS MASK IS COMPUTED, NOT STORED. Planet_BuildSpriteAndMask sums
+   the three colour channels and calls anything at or below 1
+   background, so the art needs no alpha channel and its near-black
+   border becomes the cutout. The same pass takes 4 off every
+   channel, clamped at zero.
+
+   The halo is procedural. Planet_BuildHaloRing walks 80 x 80 cells
+   over coordinates stepping 8 from -0x140 and takes
+
+       abs(isqrt(x*x + y*y) - 0xf4) * 4, capped at 0xff
+
+   as an index into g_HaloRamp. ABS OF A DISTANCE FROM A RADIUS IS A
+   RING rather than a disc: the brightest entry falls where the
+   radius is exactly 0xf4, 30.5 of the sprite's 40 cells out.
+
+   THE RAMP ENTRY IS NOT THE PIXEL, and reading it as one makes the
+   halo glare. Each entry is four bytes of which the FIRST IS UNUSED:
+   bytes 1, 2 and 3 become R, G and B, the light byte is forced to
+   zero, and each channel is then
+
+       c = ((entry >> 2) * (x + 0x140) >> 8) >> 2
+
+   so the brightest entry (0x0e, 0x27, 0x53) resolves to about
+   (1, 5, 12) of 0x3f rather than to itself - a factor of seven down,
+   with a horizontal gradient on top that fades the ring out to the
+   left. The halo is a DIM blue rim, and it carries no light at all.
+
+   [observed] The demo's halo is barely visible, which is the check
+   on all of the above: taking the entry as the pixel gives a bright
+   ring with a large light value, and both are wrong.
+
+6.  The Lens Flare
+
+   Flare_Draw (0x002cf2aa) computes one number and that number does
+   two jobs:
+
+       D4 = isqrt((fx - 0x50)^2 + (fy - 0x40)^2) >> 8
+          + (((g_SunRange >> 8) ^ 0x7f) >> 5)
+       if (D4 >= 3) return
+
+   It is the gate, and it is also the shift the sprite blitters
+   apply - so 0 draws at full brightness, 1 at half, 2 at a quarter
+   and 3 or more draws nothing. The flare fades IN rather than being
+   switched on.
+
+   THE DISTANCE TERM IS ALWAYS ZERO ON A 160 x 100 SCREEN. The
+   furthest two points are about 190 apart, Math_Isqrt returns a
+   plain root, and the >>8 crushes anything under 256 to nothing. So
+   despite how it reads, the gate is driven by g_SunRange alone:
+
+   +-----------+---------+---------+---------------------+
+   | g_SunRange| radius  | shift   | flare               |
+   +===========+=========+=========+=====================+
+   | 0x0000    | 80      | 3       | off                 |
+   +-----------+---------+---------+---------------------+
+   | 0x2000    | 48      | 2       | quarter             |
+   +-----------+---------+---------+---------------------+
+   | 0x4000    | 16      | 1       | half                |
+   +-----------+---------+---------+---------------------+
+   | 0x6000    | gone    | 0       | full                |
+   +-----------+---------+---------+---------------------+
+
+   ONE PARAMETER RUNS THE WHOLE SCENE. g_SunRange shrinks the sun
+   and brightens the flare together, so the sun recedes to nothing
+   while its ghosts bloom in - which is the effect the timeline
+   describes as the sun edging out and lighting the scene.
+
+   The ghost sprites themselves are one byte a pixel in the
+   executable - 0x002e4990 and 0x002e4d90 at 32 x 32, 0x002e5190 at
+   16 x 16 - and peak at 14 of a possible 0x3f, so the ghosts are
+   faint even at full brightness. Flare_BuildGhostSprites
+   (0x002cf4cc) expands them through 0x002cf52e with per-channel
+   shifts of (1, 1, 0):
+
+       R = s >> 1 ; G = s >> 1 ; LIGHT = 0 ; B = s
+
+   so they are BLUE-WHITE, against the sun's amber g_ColRampWarm.
+
+   The four ghosts are the sun's position reflected through
+   (0x3c, 0x3c) at four scales [verified]:
+
+   THE PLANET IS DRAWN NINE ROWS BELOW ITS CELL. Scene_DrawPlanetAndHalo
+   subtracts 0x20 from x and 0x28 from y, then adds 0x1680 to the
+   framebuffer pointer - 5760 bytes, which at 0x280 a row is exactly
+   nine rows and no columns [verified, 0x002ceb70]. The halo's loop
+   pops the same x and y, takes a further 8 off x for its wider
+   sprite, and does NOT add it, so the offset moves the planet alone.
+
+   +---------------------+-----------------------+------------------+
+   | Routine             | Position              | Sprite           |
+   +=====================+=======================+==================+
+   | Flare_GhostFar      | 0x3c - 2*(p - 0x3c)   | 32x32, ghost32a  |
+   +---------------------+-----------------------+------------------+
+   | Flare_GhostNear     | 0x3c - (p - 0x3c)/2   | 32x32, ghost32b  |
+   +---------------------+-----------------------+------------------+
+   | Flare_GhostMirror   | 0x3c - (p - 0x3c)     | 16x16, ghost16   |
+   +---------------------+-----------------------+------------------+
+   | Flare_GhostOut      | 0x3c + 2*(p - 0x3c)   | 16x16, ghost16   |
+   +---------------------+-----------------------+------------------+
+
+   So the chain lies on the line through the pivot at -2, -1/2, -1
+   and +2, which is how a real lens flare's ghosts behave.
+
+   THE EIGHTH PASS IS A GLARE BAND ACROSS THE SUN, not a horizon.
+   0x002d2530 lays ten rows starting seven above the MEAN ROW of the
+   visible cells - so it tracks the uncovered part of the sun, not any
+   fixed horizon - and runs the full 160 columns. Per pixel it reads
+   g_PolarTable by ((x - g_FlareScreenX) as a signed byte) >> 1, takes
+   the distance byte, halves it and inverts it in six bits, so the
+   value peaks at the sun and falls away along the row.
+
+   Its blend is its own [0x002d3d34]: R, G and B each take that value
+   CLAMPED AT 0x3f, and the LIGHT byte loses TWICE as much, floored at
+   zero. So the band tints and un-darkens together, which is what makes
+   it read as light grazing the planet's limb rather than as fog.
+
+   IT IS A TRANSIENT, AND THE GATE IS WHY. g_HorizonNow eases by halves
+   toward the unfolded visible count, and the band's strength is
+   -|((now >> 8) - 100)| / 4 - 30, abandoned at -50 or below. That is
+   only above the floor while the count sits near 100 - the sun about
+   half out from behind the planet - so the band blooms during the
+   emergence and is gone at either end [observed: at tick 306
+   g_HorizonNow read 0x9910, giving -44 and a live band; by tick 430
+   the count had saturated and it was suppressed].
+
+   The polar lookup's row runs -100 to +80 in twenties across the ten
+   screen rows, so a tall slice of the table is squeezed into a short
+   one of the screen.
+
+   DRAW_FLARE HAS NO ZERO TEST, AND THAT MATTERS AT THE CENTRE. It
+   indexes the ramp with a signed word and adds whatever comes back
+   [0x002d4532]. Entry 0 is 0x3f3f003f - white - and the index reaches
+   zero exactly at the flare's middle, where the falloff is zero and
+   the ray value for that one angle happens to be zero too. Treating
+   v == 0 as nothing to draw therefore removes the single brightest
+   pixel the flare has and leaves a BLACK DOT in the centre of the sun
+   for those frames [observed: at ticks 301, 338 and 416 the middle
+   pixel read (3,3,0,6) against neighbours summing 200].
+
+   AND THE INDEX LEAVES 0..255 AT BOTH ENDS. g_pRaySpikes holds up
+   to 7 and is subtracted twice, so a spiked flare's index reaches
+   -14 over its core; g_pRayArcs holds down to -12, so an arced
+   flare's reaches 279 at its rim. Neither is a defect: THE RAMP
+   BLOCK IS PADDED FOR EXACTLY THAT RANGE.
+
+   Ramp_BuildAll lays six ramps 0x4a0 apart from 0x002eeaf0 and
+   fills 0x400 of each, so forty longwords of zero follow every one,
+   and forty longwords of 0x3f3f003f - saturated white carrying no
+   light - sit in front of the first at g_ColRampPadWhite 0x002eea50
+   [verified; no xrefs, and the same bytes read live]. Forty
+   longwords at each end is what -14 and 279 need.
+
+   SO WHAT A CORE LOOKS LIKE DEPENDS ON WHICH RAMP IT IS, and the
+   two the scene uses differ:
+
+   +------------------+-------------+----------------+--------------+
+   | Ramp             | Address     | In front of it | A spiked     |
+   |                  |             |                | core reads   |
+   +==================+=============+================+==============+
+   | g_ColRampWarm2   | 0x002eeaf0  | the white pad  | white, and   |
+   | the second flare |             |                | saturates    |
+   +------------------+-------------+----------------+--------------+
+   | g_ColRampAmber   | 0x002ef430  | the zero gap   | nothing, so  |
+   | the orb and the  |             | behind         | what was     |
+   | return's burst   |             | g_ColRampWarm  | under stands |
+   +------------------+-------------+----------------+--------------+
+
+   THE PAD IS WHAT THE FIRST 46 ENTRIES HOLD ANYWAY, since the
+   inverse-square ramp saturates until i = 46, so on the block's
+   first ramp the pad behaves as a clamp to entry 0.
+
+   NEITHER CLAMPING NOR DROPPING IS A SUBSTITUTE. Clamping to entry
+   0 paints every ARCED flare's rim white, which is what made the
+   portal burst a solid white-yellow disc with the particles behind
+   it invisible; dropping the pixel punches a hole in every SPIKED
+   flare's core, which on the sun shows as one to a dozen dark
+   pixels against saturated neighbours [observed: at ticks 400, 404,
+   411 and 415 of the port, 1, 2, 11 and 3 of them]. The
+   reconstruction lays the block out as the demo does and indexes it
+   raw - gfx.c.
+
+   DRAW_FLARE'S RIGHT EDGE IS EXCLUSIVE. It clamps cx + chord to 0x9f,
+   subtracts the left edge, then takes one more off before the dbf, so
+   the last column it touches is one short of the span [0x002d4502].
+   Treating it as inclusive leaves a bright fringe down the right of the
+   screen whenever the disc runs off it.
+
+   The half-chord comes from a table at 0x002f1024, indexed
+   [dy << 8 | radius] with dy signed and the centre 0x8000 bytes in. It
+   holds exactly isqrt(radius^2 - dy^2) - checked against every radius
+   at dy -24 - so computing the root instead is equivalent. Entries
+   where radius < |dy| read 0xff and are never reached, because the row
+   loop never runs outside the disc.
+
+   THREE DIFFERENT REFERENCE POINTS ARE IN PLAY AND ALL OF THEM ARE
+   DELIBERATE. The screen centre is (0x50, 0x32), the flare pivots
+   about (0x3c, 0x3c), and the gate measures distance from
+   (0x50, 0x40). None of them is a typo for another.
+
+7.  What Moves, And The Rotating Rays
+
+   NOTHING IN Space_SunSceneFrame ANIMATES ANYTHING. The motion is in
+   Anim_SceneTick (0x002d5c66), which the VERTB hook at 0x002d5676
+   calls once per vertical blank - so it runs on the interrupt, not
+   in the render loop, which is why no frame routine appears to touch
+   the camera [verified].
+
+   Anim_SceneTick dispatches on g_SceneMode, and MODE 3 - this scene -
+   IS TWO INSTRUCTIONS:
+
+       g_SunWorldX    += 2
+       g_CameraAngle  += 0xfa0        (0x002e0ad8)
+
+   That is the whole animation THE TIMELINE DRIVES. g_SunRange is
+   not in it, but it is not constant either: Sprite_RestoreSaveUnder
+   rewrites it every frame from how much of the sun the planet leaves
+   visible - see section 2. While the planet covers the sun entirely
+   it eases to zero and stays there, which is why the radius reads as
+   a constant 0x50 and Flare_Draw's ghost chain stays gated off for as
+   long as that holds [observed: 0x002e0b62 read 0 under WinUAE with
+   the sun fully behind the planet]. The flare visible then is
+   Draw_Flare's rays.
+
+   THE SAVE-UNDER COUNT IS MEASURED THROUGH THE FRAMEBUFFER, so the
+   reconstruction runs it inside the frame rather than the tick -
+   there is nothing to measure until the frame is drawn. That ties the
+   ease to the drawn frame where the demo's is tied to its fixed 25 Hz
+   one; see effects/approach.txt section 4.4.9, which also covers why
+   the sentinel has to be tested by its high bit alone.
+
+   THE ANIMATOR RUNS AT 50 HZ AND THE SCENE RENDERS AT 25. The two
+   rates are separate, and the gap is easy to miss because both are
+   driven off VERTB. Anim_SceneTick advances the camera and the sun
+   every blank; Scene_ProjectAndDrawSun writes g_PlanetScreenX,
+   g_FlareScreenX and g_FlareScreenY on every SECOND blank only
+   [observed - a write watch on 0x002e0b3e under WinUAE reported hits
+   on frames 1, 3, 5, 7, 9, 11, 13, 15 and no others].
+
+   The interval is exactly two blanks every time, which is what says
+   this is a deliberate 25 Hz lock rather than an A4000 failing to
+   keep up - dropped frames would jitter between two and three.
+
+   So the demo moves the sun by 2 and the angle by 0xfa0 twice per
+   drawn frame, not once. WALL-CLOCK RATE IS UNAFFECTED, and a
+   reconstruction that renders every blank covers the same ground in
+   the same time with twice the samples; what changes is how stepped
+   the motion looks.
+
+   AND THE PROJECTION QUANTISES IT FURTHER. Scene_ProjectAndDrawSun
+   shifts the world coordinate up by 8 and divides by the focal
+   length 0xfa0 - 4000 - so the 2 the animator adds arrives on screen
+   as 2 * 256 / 4000, which is 0.128 of a pixel. The integer divide
+   therefore leaves the sun's screen x UNCHANGED FOR SEVEN TICKS OUT
+   OF EIGHT and moves it a whole pixel on the eighth [verified]. The
+   shadow's terminator is offset by 3 * (planet - flare) - section 4
+   - so it inherits three times that: it stalls for the same seven
+   ticks and then jumps three pixels.
+
+   At 160 x 100 none of that is visible, because a pixel is a pixel.
+   It is what decides how the motion reads once the frame is bigger
+   than the demo's own - see section 10.
+
+   THE CAMERA ANGLE IS WHAT TURNS THE RAYS, and it closes a loop left
+   open in gfx.c. Scene_ProjectAndDrawSun writes the angle to
+   0x002e0c1c as angle >> 12; Draw_Flare adds the LOW BYTE of that
+   word to the polar angle twice (0x002d451e and 0x002d4528). So
+
+       phase = ((0x400000 + n * 0xfa0) >> 12) & 0xff
+
+   advances by about one of 256 steps a frame - a full revolution in
+   roughly five seconds - and because the phase is applied twice,
+   each ray is split in two and both halves turn. That byte is the
+   g_FlareRayPhase gfx.c recorded as "nothing found writes it"; it is
+   the low half of a word written as a word.
+
+8.  The Additive Sprite Blend
+
+   Sprite_Add32x32 (0x002cf3d0) and Sprite_Add16x16 (0x002cf44e) are
+   the same routine at two sizes. The inner loop is four
+   instructions:
+
+       D0 = (A3)+              one four-byte sprite pixel
+       D0 >>= D4               the fade shift from Flare_Draw
+       D0 &= 0x3f3f003f
+       (A2)+ += D0             all four channels, one add.l
+
+   ONE add.l BLENDS THE WHOLE PIXEL, and that is why the mask zeroes
+   byte 2: the light accumulator must contribute nothing to a flare,
+   and leaving it in would also let its carry run into the blue byte.
+   R, G and B come back masked to the chipset's six bits.
+
+   A channel can still carry into its neighbour when both the sprite
+   and the destination are near 0x3f. The demo accepts that.
+
+   Both blitters address rows through g_RowOffsetTable rather than
+   multiplying, and clip all four edges by shortening the counters
+   and walking the source pointer to match.
+
+9.  The Sky Is An Environment Map, And It Is Generated
+
+   Scene_DrawTexturedSky turns each screen pixel into a DIRECTION
+   and lets the direction index a 256 x 256 texture [verified].
+   There is no skybox.
+
+   THE TEXTURE IS BUILT, NOT LOADED, AND THAT IS THE TRAP HERE.
+   g_pSkyTexture is a 0x40000 slot of g_SpacePool, and 0x40000 is
+   Fplasma's size and four-byte format exactly - so the chunk looks
+   like the obvious source and is not one. Sky_BuildTexture
+   (0x002d3a04) makes it in three passes:
+
+   +------------------------+------------------------------------+
+   | Sky_GeneratePlasma     | the field, from six sine tables    |
+   +------------------------+------------------------------------+
+   | Sky_AddNebulae         | ten soft grey blobs                |
+   +------------------------+------------------------------------+
+   | Sky_AddStars           | 500 five-pixel stars               |
+   +------------------------+------------------------------------+
+
+   SKY_ADDNEBULAE IS TEN GREY BLOBS AND IT MOVES THE STARS.
+   0x002d3c1c picks a random texel and a size of 4..0x143 ten times over
+   and calls 0x002d3c6e, which fills a size x size square with
+
+       v = ((size * 32 - r2) / r2) >> 6 , floored at 0, capped at 0x3f
+
+   and adds v to R, G and B alike through 0x002d3d02, leaving LIGHT
+   alone - so these are GREY, unlike the ghosts' blue-white.
+
+   THE SQUARE IS MOSTLY EMPTY. v only clears zero while r2 is under
+   about size / 2, so a blob of 315 is a bright core a dozen texels
+   across inside a square wider than the texture. The sphere map then
+   stretches that core, which is why they read as ovals rather than
+   discs and why one can pass for a star.
+
+   The row step wraps at 0x40000 but the COLUMN step does not: within a
+   row the original walks straight past the right edge into the next
+   one, and a blob near the end of the texture runs up to size * 4 bytes
+   beyond it, into the direction table the pool puts next.
+
+   AND IT DRAWS 30 NUMBERS FROM THE LCG BEFORE Sky_AddStars DRAWS ANY.
+   Leaving the blobs out therefore does not just lose them, it puts all
+   500 stars somewhere else - which is how a missing pass this quiet
+   shows up as a sky that is wrong everywhere [verified: with the blobs
+   in, eight consecutive texels across one blob's core matched the
+   running demo exactly, core included].
+
+   Sky_GeneratePlasma reads the sine table at 0x228b6c through six
+   pointers, in pairs, one pair a channel:
+
+       t = (((s1 >> 1) + s2) >> 8) + 0x40 , floored at 0
+       c = ((t >> a) + 0x10) >> b
+
+   with (a,b) of (2,2) for blue, (3,3) for green and (2,3) for red.
+   The six pointers advance by their own stride per pixel AND again
+   per row, wrapping at the table's 0x8000 - two independent strides
+   per pointer is what stops the field repeating visibly.
+
+   THE FIELD IS DELIBERATELY VERY DIM: blue reaches 14 of 0x3f, red
+   7 and green 4. Sky_AddStars then adds 15 on top, so the stars are
+   the only bright thing in the background. Each is a five-pixel
+   plus - a centre and four arms at +3,+3,+4 - and the centre
+   ALTERNATES between 0x0f0f000f and 0x04040004, giving two
+   magnitudes. Positions come from Math_Rand, the demo's own LCG, so
+   the field is deterministic and reproducing the generator
+   reproduces the sky.
+
+   SUBSTITUTING FPLASMA GETS BOTH THE BRIGHTNESS AND THE HUE WRONG.
+   Fplasma means (15, 12, 8) in 6-bit and peaks at 55; the generated
+   field means about (7, 4, 8) and is blue-dominant. And because
+   Draw_Flare ADDS to whatever is already there, too bright a sky
+   makes the sun's own colour clip and shift hue rather than reading
+   as a flare.
+
+   THE CARRY OUT OF THE LOW BYTE IS LOAD-BEARING in the sampler. A
+   negative u makes (u & 0xff) large, which carries into the row, so
+   the table is NOT simply addressed [v + 128][u + 128] - build it
+   that way and the sky shears by one row down the left half.
+
+   Sky_BuildDirTable (0x002d3990) precomputes the mapping once, as
+   65536 longwords. For x and y each stepping 0x100 from -0x8000:
+
+       r     = isqrt(x*x + y*y + 2*0xf000000)
+       nx    = (x << 15) / r
+       ny    = (y << 15) / r
+       entry = (ny & ~0xff) * 4 + (nx & ~0xff) / 64
+
+   THE 0xf000000 IS A Z TERM, which is what makes this a sphere map
+   rather than a flat radius. Sky_BuildSquareTable adds it into
+   every entry of g_SquareTable and both axes draw from there, so
+   the root is sqrt(x*x + y*y + z*z) with z fixed near 22434. nx
+   and ny are that unit direction's components times 32768, and the
+   packing is a byte offset into the texture: (ny >> 8) * 1024 for
+   the row and (nx >> 8) * 4 for the column, both components
+   landing inside -128..127.
+
+   PER FRAME, the three screen corners (-0x5000,-0x3200),
+   (+0x5000,+0x3200) and (+0x5000,-0x3200) go through 0x002d4132
+   rotated by the camera, and their differences from the third
+   divide by 0xa0 and 0x64 to give per-column and per-row steps.
+   0xa000 of texture space over 0xa0 pixels is 256 a pixel, so the
+   map is 1:1 in 24.8 when unrotated. The pan is the camera angle's
+   bits 15..22, four bytes a step, which is one texel - the sky
+   slides about one texel every eight frames, and that slide is
+   what reads as a camera move.
+
+   THE PAN IS ADDED TO THE TABLE ENTRY, NOT SUBTRACTED, and it is two
+   components in one longword: bits 16..23 of twice the camera angle
+   become the low byte and a second angle at 0x002e0ad4 lands in the
+   high half, so multiplying by four shifts whole 1024-byte texture
+   rows as well as columns [verified, 0x002d2e64]. That second angle
+   is zero throughout this scene, so only the horizontal term acts.
+   Getting the sign wrong samples 272 texels away, and blue carries
+   the error because blue has three times the range of red and green
+   in the generated field.
+
+   The inner loop is four instructions of work a pixel:
+
+       D6.w  = (x_acc & 0xff00) | (y_acc & 0xff)
+       D6    = g_pSkyDirTable[D6.w]      SIGN-EXTENDED word index
+       D6   += the camera pan
+       D6   &= 0x3ffff
+       pixel = g_pSkyTexture[D6]
+
+   The (x & ~0xff) | y packing is the same trick
+   Logo_DrawZoomedText uses. MASKING RATHER THAN CLAMPING MEANS THE
+   SKY TILES, and 0x3ffff is 0x40000 - Fplasma's size exactly,
+   which is also why its edges match seamlessly.
+
+   THE TWO POINTERS ARE SUB-BLOCKS, NOT CHUNKS, and reading them
+   the other way round is easy: g_pSkyTexture at 0x002f1104 holds
+   the texels and g_pSkyDirTable at 0x002f1108 the lookup, both
+   0x40000. g_SpacePool carves one allocation into seven, and the
+   three after them at 0x1000, 0x1000 and 0x400 are the flare
+   ghosts at 32x32x4, 32x32x4 and 16x16x4 - which independently
+   confirms the ghost geometry of section 6.
+
+10. What Is In The Reconstruction
+
+   src/part_sun.c carries the scene. Four of its pieces are shared
+   primitives already in src/gfx.c, because Draw_Flare has seventeen
+   callers across the demo:
+
+   +------------------------+--------------------------------------+
+   | Gfx_Flare              | Draw_Flare        0x002d4452         |
+   +------------------------+--------------------------------------+
+   | Gfx_Isqrt              | Math_Isqrt        0x002ca766         |
+   +------------------------+--------------------------------------+
+   | g_ColRampWarm          | 0x002eef90                           |
+   +------------------------+--------------------------------------+
+   | g_RayArcs              | g_pRayArcs        0x002f102c         |
+   +------------------------+--------------------------------------+
+
+   The sky needs no archive - it is generated - so src/part_sun.c
+   depends on nothing but the executable. src/dat.c exists for the
+   textures that are chunks.
+
+   src/part_sun.c carries all eight passes of section 2, the occlusion
+   counter and both Draw_Flare calls included.
+
+   TWO DELIBERATE DIVERGENCES. Sky_AddNebulae stops at the end of the
+   texture where the original can overrun into the direction table, and
+   the flare's span is clipped in output pixels rather than demo ones,
+   which is exact at scale 1 and a sub-pixel matter above it.
+
+   A THIRD IS OPTIONAL. RELIC_MODE_SUBPIXEL re-evaluates section 7's
+   projection without its truncation and places the sun, both flares
+   and the terminator at the result, so they advance 0.128 and 0.384
+   of a pixel a tick instead of stalling and jumping. Measured at
+   scale 12, the terminator goes from frozen for seven ticks and then
+   60 screen pixels in a single frame to a steady 4.6 a tick. The
+   drawn centre can therefore sit up to a pixel right of the demo's
+   own, and that difference IS the truncation being removed.
+
+   The mode is forced off at scale 1.0, which is what keeps that the
+   exact reference - see reconstruction.txt section 5. Three things it
+   deliberately does not cover: the sky pan, which the demo steps a
+   whole texel at a time through its own direction table; the lens
+   flare's ghosts; and the glare band, whose offset is wrapped
+   through a signed byte before the polar lookup, so carrying a
+   fraction there would change the wrap rather than smooth the slide.
+
+11. Open Questions
+
+   o  Why the halo appears to move with the sun and to pulse
+      [observed]. Planet_BuildHaloRing is called once at scene entry
+      by all five of its callers, and Scene_DrawPlanetAndHalo centres
+      it on the planet, which mode 3 never moves - so the sprite
+      cannot move or change. The likeliest reading is that the
+      shadow sweeping across the ring changes which part of it is
+      visible, which would read as both motion and a pulse; that is
+      a prediction, not a finding.
+
+   o  Which of g_SpacePool's two 0x40000 slots receives Fplasma.
+      Space_LoadAssets loads six chunks through 0x0021fa94 from the
+      name table g_SpaceChunkNames - Fspacedata, Fwadepic, Fplasma,
+      Fshiptextures, Fcrust, Fearth - and the hand-off into slot 0
+      is not read. Fplasma is the only chunk whose size and format
+      match what the sampler needs.
+

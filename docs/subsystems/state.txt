@@ -1,0 +1,222 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                        THE STATE LINE
+
+
+Abstract
+
+   One key=value line saying where the reconstruction is, emitted by
+   both hosts and keyed on the demo's own global names so a field
+   means the same thing on either side of a comparison.
+
+Table of Contents
+
+   1. Why
+   2. The Format
+      2.1. The Universal Three
+      2.2. A Part's Own Fields
+      2.3. What Must Not Be In It
+   3. Where It Comes Out
+   4. Comparing The Two
+      4.1. A Capture Is Paused MID-FRAME
+      4.2. Drift Tells A Phase Error From A Real One
+      4.3. Naming A Pixel
+   5. Open questions
+
+1.  Why
+
+   A picture of the reconstruction and a picture of the demo may
+   differ only in being at different moments, so a comparison has to
+   be on STATE AT A TICK rather than on pixels.
+
+   The gap this closes is naming. A paused emulator can be
+   pointed at - "here is where it goes wrong" - but nothing on our
+   side carried a number that could be pointed back at. The state
+   line gives every stopped moment a name.
+
+2.  The Format
+
+   Space separated key=value, stable order, one line. A person reads
+   it and a script splits it on whitespace and '='; nothing in
+   between parses prose.
+
+       tick=247 part=15 mark=-1 camsrcx=-1610 camsrcy=-20600
+       camsrcz=-6000 camerayaw=-29 camerapitch=282
+       panoramascrollx=207 sceneanglea=247 flaresizestep=247
+       portalphase=0 objectangle=-848 glowpx=0 ready=1
+
+   THE KEYS ARE THE DEMO'S OWN GLOBAL NAMES, lowercased and stripped
+   of the g_ prefix: g_CamSrcX is camsrcx. That is the whole trick
+   that makes a comparison tool a dict diff - the emulator side
+   derives the same key from symbol_map.txt, and no table maps one
+   spelling to the other.
+
+   Values are decimal and signed. Hexadecimal reads better for a
+   fade or a mask, and is not worth two parsers.
+
+2.1.  The Universal Three
+
+   tick, part and mark come first and are the port's own, not the
+   demo's. Parts_StateLine writes them; a part never does.
+
+   mark is -1 when the caller has no mark to report, which is the
+   case under relic_ppm -states: it drives a part directly and never
+   goes through demo.c's mark tracking.
+
+2.2.  A Part's Own Fields
+
+   The part's stats() callback supplies the rest, and it is the SAME
+   callback a host has always printed. There is no second hook: a
+   part that has been converted emits key=value and one that has not
+   emits prose, which a reader can still use and a parser skips.
+
+   A value of ours with no counterpart in the demo carries no demo
+   name - glowpx and ready above. That is the signal that there is
+   nothing to compare it against.
+
+2.3.  What Must Not Be In It
+
+   ANYTHING DOWNSTREAM OF A RANDOM ROLL. Temple_Rand fires some 750
+   times a frame in the temple's second shot and the stream is
+   shared across effects, so a field fed from it diverges on the
+   first frame and stays diverged however right the scene is -
+   effects/temple.txt 8.2.
+
+   A field like that reported beside the deterministic ones would
+   make every comparison fail at tick 1 and say nothing about why.
+   Rock positions, spark counts and puff slots belong in a part's
+   own prose, not here.
+
+3.  Where It Comes Out
+
+   Parts_StateLine in src/parts.c is the only formatter. Both hosts
+   reach it:
+
+       relic_ppm -states      one line per tick, AND NO PICTURES,
+                              which is what makes it cheap enough to
+                              run over a whole part: 525 ticks of
+                              part 2.15 in 349 ms [measured]
+       main_sdl SPACE         on pausing
+       main_sdl .             on each single step
+
+   Demo_StateLine in src/demo.c is the window host's wrapper, which
+   supplies demo.c's own tick, part and mark.
+
+   THE FRAME IS STILL DRAWN UNDER -states. A part's state is what its
+   own frame() leaves behind, so skipping the draw would report a
+   different scene from the one being compared.
+
+4.  Comparing The Two
+
+   tools/statecmp.py takes the demo's values, anchors the tick with
+   tools/anchor.py, runs relic_ppm -states at that tick and diffs.
+   One command:
+
+       py -3.10 tools/statecmp.py --demo "scenemode=1 camsrcx=23740
+           camsrcy=-59600 camerayaw=500 ..." -p 15
+
+   A KEY RESOLVES TO A SYMBOL BY NAME ALONE. Since a key IS the
+   demo's global lowercased without g_, --syms finds each one in
+   symbol_map.txt case-insensitively and prints the amiga_read calls
+   to make. There is no mapping table to keep in step, and a key that
+   matches nothing is ours and is reported as having nothing to
+   compare rather than as a failure.
+
+   IT TAKES THE WIDTH FROM THE MAP. g_CameraYaw is a longword and
+   g_SceneAngleA is a word, so a flat length=4 would read the next
+   global's top half into the answer.
+
+4.1.  A Capture Is Paused MID-FRAME
+
+   GLOBALS WRITTEN AT DIFFERENT POINTS OF A FRAME ARE AT DIFFERENT
+   PHASES IN A SNAPSHOT, and that reads as a port bug when it is not.
+
+   A capture holds g_CameraYaw 500 and g_PanoramaScrollX 74. Our
+   tick 52 has yaw 500 and scroll 75; our tick 51 has yaw 501 and
+   scroll 74 [observed]. So the snapshot carries one tick's yaw
+   beside the previous tick's scroll: Anim_ModeStep had moved the yaw
+   and Space_StepDeparture had not yet recomputed the scroll from it.
+
+   Nothing is wrong on either side - the demo's next frame computes
+   75 from that same yaw. The rule is that a value the VBL hook
+   writes runs one step AHEAD of a value Space_Step* derives from it.
+
+   THE RENDER TARGET IS HALF DRAWN FOR THE SAME REASON. That same
+   framebuffer holds the panorama and the sun but NOT the ship:
+   Scene_SortAndDrawAll had not run yet. Against our tick 52 it
+   scores R 1.36, and one VBL later - the same frame finished - R
+   1.06 [observed].
+
+   So a capture taken this way can be missing whole
+   objects. A scalar score hides it: 1.36 against 1.06 looks like
+   noise, while the picture shows a ship drawn on one side and not
+   the other.
+
+   ONE amiga_frames n=1 IS NOT A BLANKET FIX. It also advances the
+   state by a tick and swaps which buffer is the render target, so
+   whether it helps depends on where in the frame the capture
+   sits. One improves with it, 1.36 to 1.06; another is already
+   complete, and advancing it scores 14.13 against the
+   matching tick instead of 3.60 [observed]. SCORE BOTH PARITIES and
+   keep the better, or check the capture is complete by comparing a
+   row profile rather than assuming.
+
+4.3.  Naming A Pixel
+
+   tools/shotgrid.py writes a frame as a PNG with the grid labelled
+   in DEMO coordinates - the 160 by 100 a watch address is computed
+   from - so a difference can be pointed at. Two files give four
+   panels: each side's colour above its LIGHT.
+
+   THE LIGHT PANEL IS THE POINT. The thrusters, the sun and the
+   portal glow write byte +2 alone and are invisible in resolved
+   colour, which is how a measurement through a PPM once read as a
+   regression. A pixel over CHAN_MAX is marked red; both sides go
+   over, along the planet's limb.
+
+   --at names one pixel and prints the live address and the four
+   calls that find every writer of it:
+
+       amiga_watch addr=<a> length=4
+       amiga_frames n=1
+       amiga_hits
+       amiga_watch_clear
+
+   Run on pixel (117,69) of a capture that returns PC 0x0048ce20,
+   which is image 0x002c98bc, inside Space_BlitPanorama's copy loop
+   [observed]. THE BASE MOVES BETWEEN RUNS, so --base takes the
+   render target amiga_fb reports rather than remembering one.
+
+4.2.  Drift Tells A Phase Error From A Real One
+
+   --drift N sweeps our tick either side and counts agreeing fields.
+   A BEST FIT IS ONLY A MEASUREMENT WHILE THE STATES STILL MATCH, so
+   a flat sweep is reported as unusable and a tie as a range, never
+   as an offset.
+
+   In one capture the sweep peaks sharply - 7 fields at offset 0
+   against 4 at every neighbour [observed] - which is what proved the
+   scroll's +1 was a within-frame phase and not a misalignment.
+
+5.  Open questions
+
+   -  ONLY PART 2.15 IS CONVERTED. The other thirteen parts with a
+      stats() still emit prose. Converting one needs the Ghidra name
+      for each field it reports, which is research, not formatting.
+
+   -  ONE SCENE HAS AN ANCHOR. tools/anchor.py turns a capture's
+      counters into a tick and takes this same key=value format, so
+      feeding it our own -states line round-trips. Only the departure
+      is in its table; every other scene needs its per-tick deltas
+      read first - return.txt 3.1.1.
+
+   -  NOTHING READS THE EMULATOR SIDE AUTOMATICALLY. The debug pipe
+      takes one client and an MCP server holds it, so both tools are
+      given values rather than fetching them; --syms prints the
+      amiga_read calls to make.
+
+   -  ONLY PART 2.15 CAN BE COMPARED IN FULL, because it is the only
+      one reporting keys that name demo globals. That is deliberate:
+      the earlier parts need little or no state, and statecmp says so
+      rather than failing when a part's stats() is prose.

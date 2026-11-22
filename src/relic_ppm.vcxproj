@@ -1,0 +1,198 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- The no-dependency host. It writes PPM files and links nothing
+       but the CRT, which is what tools/ctest.py drives to diff the C
+       against the verified Python in sim/. Keep it buildable: it is
+       the only target that works on a machine with no SDL. -->
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>15.0</VCProjectVersion>
+    <ProjectGuid>{C8B72D3F-6E55-4D2B-AF40-2B3C4D5E6F71}</ProjectGuid>
+    <RootNamespace>relic_ppm</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v141</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)..\build\obj_ppm\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>relic_ppm</TargetName>
+    <LocalDebuggerWorkingDirectory>$(ProjectDir)..</LocalDebuggerWorkingDirectory>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <CompileAs>CompileAsC</CompileAs>
+      <WarningLevel>Level4</WarningLevel>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</GenerateMapFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <InlineFunctionExpansion Condition="'$(Platform)'=='Win32'">Disabled</InlineFunctionExpansion>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile Condition="'$(Platform)'=='Win32'">true</GenerateMapFile>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="dat.c" />
+    <ClCompile Include="demo.c" />
+    <ClCompile Include="music_ibxm.c" />
+    <ClCompile Include="third_party\ibxm\ibxm.c" />
+    <ClCompile Include="third_party\prowizard\p61a.c" />
+    <ClCompile Include="gfx.c" />
+    <ClCompile Include="tex.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="geom.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="image.c" />
+    <ClCompile Include="beam.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_logo.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="orbscene.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_orb.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_underside.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_explosion.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="orb.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_release.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_earth.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_sand.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_temple.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_return.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_debris.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_valley.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_city.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_destruction.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_ark.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_credits.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="stills.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="main_ppm.c" />
+    <ClCompile Include="part_approach.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_portal.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_window.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="ship.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="rast.c" />
+    <ClCompile Include="uv.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_sun.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="space.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="sprout.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="part_term.c">
+      <AdditionalOptions Condition="'$(Platform)'=='Win32'">/Gh /GH %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="parts.c" />
+    <!-- NEVER /Gh ON THIS FILE: _penter would call itself. -->
+    <ClCompile Include="agent.c" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,0 +1,1063 @@
+PCDEMOS RELIC                                           Subsystem Report
+
+
+                       THE DEBUG AGENT AND ITS MCP
+
+
+Abstract
+
+   A crude debugger embedded in the reconstruction. One line
+   protocol on a named pipe lets a client jump to a part, step it a
+   tick at a time, read or write a named variable, and write the
+   frame out as a PPM. An MCP server presents it as tools, so the
+   effects can be driven and looked at without a window.
+
+   It is OURS in full - nothing in it is transcribed from the demo.
+   The agent is src/agent.c, the host boundary src/agent.h, the
+   transport and CLI tools/agent/agent.py, and the MCP server
+   tools/agent/mcp_server.py.
+
+   Status: all of it works and is smoke-tested, hooks included.
+   What is not here is in section 9.
+
+   WIN32 ONLY, AND BOTH CONFIGURATIONS. Debug|Win32 and Release|Win32
+   each generate the map and each carry /Gh, so the agent is there in
+   whichever is being built. x64 cannot have it - section 4.1.
+
+Table of Contents
+
+   1. What this is
+      1.1. Why the pump, and not a thread
+      1.2. Why a blocking pipe
+   2. Starting it
+   3. The map file
+      3.1. Two tables, one pass
+      3.2. What is thrown away
+      3.3. The relocation slide
+      3.4. A name is not unique
+      3.5. Staleness
+   4. The build
+      4.1. What agent.c collapses to
+      4.2. Where /Gh is on
+      4.3. Why inlining is off in Release
+      4.4. What the instrumentation costs
+   5. Command reference
+      5.1. Session
+      5.2. The part list and the clock
+      5.3. The frame
+      5.4. Symbols
+      5.5. Memory
+   6. Hooks
+      6.1. hits=0 is not an answer
+      6.2. No locks, because there is one thread
+      6.3. The capture grammar
+      6.4. Recording only what was asked for
+      6.5. Counting without recording
+      6.6. The record, and the ring
+      6.7. Exit, pairing and delta
+      6.8. SET_HOOK proves it reaches _penter
+   7. Errors
+   8. The crash report
+   9. What this refuses to do
+  10. Open questions
+
+
+1.  What this is
+
+   Two halves. Inside relic_ppm, one listener thread on
+
+       \\.\pipe\relic_agent
+
+   accepts one client and one verb per line. Outside,
+   tools/agent/mcp_server.py turns each verb into an MCP tool, and
+   tools/agent/agent.py is both its transport and a CLI for driving
+   the same protocol by hand.
+
+   A reply is one line beginning OK or ERR_. When that first line
+   carries lines=N, exactly N more lines follow it, and the client
+   reads them before sending anything else - a header read without
+   its body desynchronises every later command.
+
+1.1.  Why the pump, and not a thread
+
+   THE DEMO CORE IS SINGLE THREADED AND Demo_* IS NOT REENTRANT.
+   The listener therefore never touches demo state. It parks the
+   request line, signals an event, and waits; Agent_Pump picks it up
+   on the host's own thread between frames, executes it, and signals
+   back.
+
+   That is not a compromise, it is what a single-threaded target
+   buys: stepping is synchronous, a memory read cannot catch a frame
+   half rendered, and there is no lock anywhere in the render path.
+
+1.2.  Why a blocking pipe
+
+   Because the pump owns execution, the listener may sleep in
+   ReadFile for ever - nothing else needs that thread. So the pipe
+   is created PIPE_WAIT and there is no poll loop and no sleep in
+   the request path on either side.
+
+   A NON-BLOCKING PIPE WOULD COST 15.6 MS A COMMAND HERE. Windows
+   rounds a sleep up to the scheduler tick unless some process has
+   asked for better, and nothing in this build does, so a poll loop
+   pays a whole tick per round trip. Over a scripted session of a
+   few hundred commands that is the difference between instant and
+   noticeably slow, for no benefit.
+
+   While the demo is paused Agent_Pump itself waits INFINITE on the
+   request event, so an idle session costs nothing at all and a
+   command is served the moment it lands.
+
+   A HOST WITH A WINDOW MUST NOT ASK FOR THAT. A blocked message
+   loop is a window Windows paints as "not responding", which is why
+   Agent_Pump takes AGENT_PUMP_BLOCK as a flag rather than assuming
+   it, and why the SDL host does not carry the agent at all today.
+
+
+2.  Starting it
+
+       build\Win32\Debug\relic_ppm.exe reverse/ghidra/relic <out-dir> \
+           -dat reverse/ghidra/relic.dat -agent
+
+   -agent replaces the batch modes: the host initialises the demo,
+   starts the agent and then does nothing but pump. Nothing advances
+   except on a verb.
+
+   PASS -dat. Several parts open a chunk of relic.dat in their
+   init(), and Demo_GotoPart discards what Demo_SetResolution
+   returns - so without the archive a part initialises badly and
+   renders an all-black frame that is a perfectly well formed PPM.
+   The agent asks again for that return value and reports
+   init=FAILED on GOTO, which is the only thing that distinguishes
+   it from a scene that is genuinely dark.
+
+   ONE CLIENT AT A TIME. The pipe is created with nMaxInstances=1,
+   so the second client to reach for it is refused with
+   ERROR_PIPE_BUSY. That arrives as EINVAL and is reported as busy
+   rather than absent, because the two want opposite answers: told
+   there was no agent, a client would start a second host, which
+   cannot create the pipe either.
+
+   AN MCP SERVER IS SPAWNED PER CLIENT, one to a stdio connection,
+   so several can be up at once and only one can drive the host.
+   Whichever issues a verb first opens the pipe and holds it for
+   the life of that server; the rest are refused as busy.
+
+   RESTARTING THE HOST UNDER A LIVE CLIENT IS TRANSPARENT. The MCP
+   server outlives any one host, so its first verb after a restart
+   goes to a handle whose process is gone; the transport reopens and
+   sends once more. It retries ONLY a write that failed - a write
+   that landed and a reply that did not means the host died running
+   the verb, and re-sending a STEP or a SET_MEM would do it twice.
+
+       py -3.10 tools/agent/agent.py status
+       py -3.10 tools/agent/agent.py raw "GOTO part=11"
+       py -3.10 tools/agent/mcp_server.py --selftest
+
+
+3.  The map file
+
+   The agent finds its own map by taking its module path and
+   replacing the extension, so nothing configures a path and both
+   executables work the same way. GenerateMapFile is set for every
+   Win32 configuration in src/relic_ppm.vcxproj, and MSVC writes it
+   next to the exe.
+
+3.1.  Two tables, one pass
+
+   The parser enters on the header line
+
+       "  Address         Publics by Value"
+
+   and never leaves. That gate is load-bearing twice over.
+
+   THE SECTION TABLE AT THE TOP OF THE MAP HAS THE SAME COLUMN SHAPE
+   AS A SYMBOL LINE, so a parser that only tests for ':' in column 5
+   ingests section lengths as symbols - one reading of this file
+   produced a symbol named 00000104H that way.
+
+   And never leaving is what picks up the "Static symbols" table
+   below the entry point. That table matters more than the public
+   one: src/ holds 230 static functions against 403 external ones,
+   and 224 of those statics resolve [verified, measured against
+   build/Win32/Debug/relic.map]. The six that do not are dead code
+   the linker dropped and one function belonging to the other
+   executable.
+
+   Lines are tokenised rather than read at fixed offsets, because
+   the flag column that marks a function is present for one and
+   absent for a datum, and the object name after it is needed
+   (3.4).
+
+3.2.  What is thrown away
+
+   A name containing any of
+
+       ?   @   $   !   #
+
+   is skipped, as is any row whose Rva+Base reads zero. Between them
+   that removes C++ decoration (?alreadyTried@?1??GetPdbDll@@...),
+   string pools (??_C@_02JDPG@rb?$AA@), fastcall decoration
+   (@__security_check_cookie@4), section symbols (.debug$S,
+   .idata$6, $R000000) and the <absolute> block. 1,119 usable
+   symbols survive out of 1,934 candidate lines [verified].
+
+   '#' is in that set because '#' is OURS - it separates a name from
+   its object in a query (3.4). Filtering it means a surviving name
+   can never contain one, so the separator cannot collide with a
+   real symbol by construction.
+
+3.3.  The relocation slide
+
+   ASLR IS OFF IN EVERY CONFIGURATION OF BOTH PROJECTS, because
+   an image that moves makes a map address, a watch and a crash
+   report all name somewhere the next run will not put it. Three
+   consecutive Debug runs were observed at 0x180000, 0x330000 and
+   0xDC0000 against a preferred base of 0x400000 [observed], which
+   is what RandomizedBaseAddress false in both .vcxproj files now
+   prevents.
+
+   The agent corrects for a slide regardless, because Rva+Base is
+   computed against the preferred base and a relocation can still
+   be forced on it. So the parser reads
+
+       " Preferred load address is "
+
+   out of the map, subtracts it from GetModuleHandle(NULL), and adds
+   the difference to every symbol. STATUS reports both as base= and
+   slide=.
+
+   A SLIDE OF ZERO IS THE INVARIANT, AND WORTH READING AS ONE.
+   With ASLR off the image loads where the map says it will, so a
+   non-zero slide means something moved it and every address in
+   that run came from the correction rather than from the map.
+
+   The correction stays because an unrelocated address is the
+   hardest kind of wrong to see: it is in the right range, has the
+   right shape, and faults when read.
+
+3.4.  A name is not unique
+
+   Static globals of the same name in different files share a name
+   in the map, and in this tree that is the normal case rather than
+   an edge case [verified]:
+
+   +----+-----------------------------------------------------------+
+   | n  | name and the objects that define it                       |
+   +====+===========================================================+
+   | 12 | g_ready - geom, part_earth, part_explosion, part_orb,     |
+   |    | part_release, part_sand, part_temple, part_underside,     |
+   |    | part_window, ship, sprout, tex                            |
+   | 7  | g_cam                                                     |
+   | 6  | g_tick                                                    |
+   | 5  | g_pal, g_cv                                               |
+   | 4  | g_scroll, g_second_on, g_second_cx, g_second_cy,          |
+   |    | g_range_prev                                              |
+   | 3  | path_eval, path_camera, path_at, g_prev, g_depth,         |
+   |    | g_cursor                                                  |
+   | 2  | rot2d, orb_project, g_warp_a, g_uv, g_sx, g_sy            |
+   +----+-----------------------------------------------------------+
+
+   Object qualification is therefore the primary addressing mode,
+   not a tiebreaker:
+
+       SYM name=g_ready              ERR_AMBIGUOUS, and the list
+       SYM name=g_ready#part_temple  one answer
+
+   The object match is a case-insensitive substring, so
+   part_temple finds part_temple.obj. A bare name that resolves to
+   more than one symbol is refused rather than guessed at.
+
+   Each record also carries the flag column as kind=f or kind=d, so
+   a hook can refuse a datum (section 6) and SYMS can list one kind.
+
+3.5.  Staleness
+
+   A map older than the exe beside it makes every symbol address
+   silently wrong, and two targets sharing one output directory is
+   the normal way that happens - relic.exe and relic_ppm.exe were
+   observed 59 minutes apart in build/Win32/Debug [observed].
+
+   STATUS reports mapstale=1 and warns; SYM and SET_HOOK refuse
+   outright, because those are the verbs a wrong address corrupts
+   rather than merely confuses. force=1 overrides the refusal.
+
+
+4.  The build
+
+4.1.  What agent.c collapses to
+
+   The whole file is guarded on
+
+       #if defined(_M_IX86)
+
+   and outside that guard it is three empty functions, with
+   Agent_Start returning failure so a host can say why rather than
+   spin. agent.c is therefore compiled in every configuration and
+   excluded from none - the stubs are what keep x64 linking.
+
+   X64 IS NOT SUPPORTED AND CANNOT BE WITHOUT A REWRITE. There is no
+   __declspec(naked) on x64, no inline assembly, and the first four
+   integer arguments are in registers rather than on the stack - so
+   the argument capture section 6 is built around has nothing to
+   read. 32-bit also gives the leading cdecl underscore the map
+   parser strips.
+
+   agent.c is excluded by name in tools/build_web.sh, which globs
+   src/*.c: windows.h has no business reaching emscripten, and no
+   guard in the file would keep the include out.
+
+4.2.  Where /Gh is on
+
+   /Gh and /GH make MSVC emit a call to _penter as a function's
+   first instruction and a call to _pexit after its epilogue. Both
+   are per-file AdditionalOptions in src/relic_ppm.vcxproj,
+   conditioned on Win32, and on 23 files: the fourteen part_*.c plus
+   space.c, ship.c, orb.c, beam.c, geom.c, sprout.c, orbscene.c,
+   uv.c and tex.c.
+
+4.3.  Why inlining is off in Release
+
+   gfx.c and rast.c are deliberately OUT. They are the renderer's
+   primitives, called per pixel and per scanline at /Od, and
+   instrumenting them would cost far more than anything they could
+   report.
+
+   NEVER /Gh agent.c. _penter would call itself and recurse until
+   the stack is gone. Nothing in the project's global options
+   enables it, so the only way to break this is by hand.
+
+   The flag reaching an object is verifiable from the outside: the
+   first five bytes of a /Gh function are the call, ahead of its
+   prologue.
+
+       GET_MEM sym=spline len=8
+         OK addr=0x001AC1B0 len=8 bytes=E896BEFEFF558BEC
+                                        ^^^^^^^^^^ call __penter
+                                                  ^^^^^^ push ebp,
+                                                         mov ebp,esp
+
+   STATUS reports penter= and pexit= counts for the same reason. A
+   hook armed on a function in a file built WITHOUT /Gh would never
+   fire and would look exactly like a function that is never called,
+   so the count is the only thing that tells those apart.
+
+   RELEASE BUILDS WITH INLINING DISABLED ON WIN32, and that is not a
+   tuning choice. An inlined function emits no _penter and keeps no
+   address in the map, so a hook on it never fires and reports
+   nothing - which reads as the function never running rather than as
+   a build setting.
+
+4.4.  What the instrumentation costs
+
+   AT /Od THE FLAGS ARE NEARLY FREE AND AT /O2 THEY ARE NOT, because
+   what is being paid for in Release is mostly the lost inlining
+   rather than _penter. 200 frames of part 2.14 at tick 0x1964 run
+   152 ms with neither and 240 ms with both - about 1.6x [measured].
+   That is paid on every Release render and it buys the agent in the
+   configuration the work is actually done in.
+
+   A separate Agent|Win32 configuration would avoid it and has not
+   been added: a second Release-like configuration is one more thing
+   to keep in step, and 88 ms is not felt.
+
+   The Debug figures below are the per-call cost on its own.
+
+   ONE INSTRUMENTED CALL COSTS ABOUT 12 ns, which is the call plus
+   pushad, pushfd, the increment and the unwind - of the order of
+   36 cycles. Measured against a control host built from the same
+   sources with the flags stripped, minimum of three runs of 300
+   frames each [verified].
+
+   +-----------+---------+----------+-----------+----------+
+   | part      | res     | calls/fr | ms/frame  | cost     |
+   +===========+=========+==========+===========+==========+
+   | ruins     | 320x256 |   93,967 | 8.07/6.93 | +16.4%   |
+   +-----------+---------+----------+-----------+----------+
+   | release   | 320x256 |    9,558 | 15.3/15.3 | in noise |
+   +-----------+---------+----------+-----------+----------+
+   | asteroid  | 320x256 |    7,521 | 12.0/11.9 | in noise |
+   +-----------+---------+----------+-----------+----------+
+   | window    | 320x256 |    6,359 | 6.67/6.51 | in noise |
+   +-----------+---------+----------+-----------+----------+
+   | sand      | 320x256 |      135 | 2.76/2.76 | none     |
+   +-----------+---------+----------+-----------+----------+
+   | terminal  | 320x256 |        3 | 2.29/2.24 | none     |
+   +-----------+---------+----------+-----------+----------+
+
+   Over that whole sample the instrumented host is 2.4% slower, so
+   the current file list is affordable and the only part where the
+   flags are visible at all is the ruins.
+
+   THE CALL RATE IS WHAT VARIES, NOT THE PER-CALL COST, and it
+   varies by four orders of magnitude between parts. part_temple.c
+   makes 94,000 instrumented calls a frame against the terminal
+   three, which is why a measurement averaged over the demo says
+   nothing useful and why the per-call figure is taken from the
+   ruins alone - it is the only case whose signal clears the few
+   percent of scheduler noise these timings carry.
+
+   A DISPATCH SCAN MUST NOT BE PAID BY AN UNARMED SESSION. 12 ns
+   is the floor for an instrumented build; at 94,000 calls a frame
+   anything added per call is multiplied by that, so the armed
+   count is tested in the asm stub before anything else and an
+   unarmed session pays one load and one branch.
+
+   ARMING ONE HOOK COSTS THE RUINS 43% OF ITS FRAME - 7.94 ms
+   against 11.32 ms, minimum of three runs of 120 frames
+   [verified]. That is about 36 ns on each of its 93,967
+   instrumented calls, and the denominator is the point: the extra
+   is paid by every call in an instrumented file, not by the
+   hooked function alone, because every one of them now branches
+   into C to find out whether it matched.
+
+   AN ACCUMULATOR COSTS MORE THAN A CAPPED CAPTURE, not less -
+   11.97 ms against 11.32 [verified]. A hook that has reached its
+   max stops working on arrival; agg= is doing a read and a
+   compare on every call, which is what it is for.
+
+   The 7.94 ms is unchanged by any of this: a session with nothing
+   armed still pays the load and the branch in the stub and goes
+   no further. So the useful hook is on a part that is not the
+   ruins, or on a function in a file whose other work is light. A
+   hook is not free, it is affordable - and it is cheapest to
+   leave none armed when not reading a trace.
+
+
+5.  Command reference
+
+   Every verb is one line. Keys are key=value, space separated, in
+   any order.
+
+5.1.  Session
+
+       HELLO                    OK relic_agent proto=1
+       CAPS                     the verb list and every limit
+       STATUS                   where the demo is - see below
+       QUIT                     the host shuts down cleanly
+
+   STATUS is the one to read first:
+
+       OK state=paused part=0 count=15 tick=60 shown=59 auto=0
+          host=640x256 frame=640x256 syms=1149 base=0x00400000
+          slide=0x00000000 mapstale=0 penter=616400 pexit=616400
+          armed=0 dumps=3/100 map=... crashlog=... label=...
+
+   tick IS THE CLOCK AND shown IS THE PICTURE. Demo_Frame renders a
+   tick and then advances, so after n frames the clock reads n and
+   the pixels show n-1. Both are reported so neither has to be
+   inferred; shown=-1 means nothing has been rendered yet.
+
+   SHOWN IS WHAT COMPARES TO relic_ppm -t, NOT tick. A state read at
+   tick=N holds N-1 steps and differs from -t N by exactly one, which
+   on a scene whose camera moves a fixed amount a tick reads as a
+   small offset rather than as a mistake [verified: g_cam_x -1480 at
+   shown=246 against -1610 at -t 247, one 0x82 step]. Any tool that
+   lines the two sides up takes shown.
+
+5.2.  The part list and the clock
+
+       PARTS                    index, id, name, status, size, length
+       GOTO part=N              jump, render its first frame, stop
+       NEXT  /  PREV            the same, one part either way
+       STEP [n=1]               render n ticks and stop
+       RUN_TO tick=N            render forward to tick N
+       PAUSE  /  RESUME         stop, or run freely
+       SET_RES w=W h=H          the host size the demo fits into
+
+   THERE IS NO SEEK, ONLY REPLAY. A part with a step() callback
+   evolves its own state frame to frame, so the only way to reach a
+   tick is to render every tick up to it from the part's start.
+   RUN_TO backwards is refused with ERR_NO_SEEK rather than
+   answering wrongly; GOTO the part first.
+
+   PAUSE turns auto-advance off with it, so a step cannot drift into
+   the next part behind the client's back. RESUME turns it back on,
+   which is the demo's own behaviour.
+
+   A RUN IS BOUNDED TWICE: by AGENT_STEP_MAX ticks and by
+   AGENT_BUDGET_MS of wall clock, because an MCP call has a timeout
+   and an unoptimised frame does not. A run cut short by either
+   reports truncated=1 and the tick it actually reached - a
+   truncation that looked complete would make every later reading
+   wrong with nothing to show it.
+
+   The default host size is small on purpose. A big frame makes
+   every step slower for nothing; SET_RES up to 1280x720 just before
+   a dump is the cheap way round it.
+
+5.3.  The frame
+
+       DUMP path=FILE           write the frame as a binary PPM
+       DUMP_MEM (sym=|at=) [off=] [deref=1] [skip=] len= path=
+       DUMP_RESET               clear the dump counter
+
+   The frame AS IT STANDS, never a fresh render: a dump that drew
+   would move the clock as a side effect of looking. A relative path
+   resolves against the out-dir the host was started with, and
+   AGENT_DUMP_MAX dumps per session is the guard against a scripted
+   loop filling a directory.
+
+   The MCP tool adds the proportion of non-black bytes to the reply,
+   because an all-black frame is a well formed PPM and a part whose
+   init failed produces one (section 2).
+
+   DUMP_MEM WRITES A REGION OF MEMORY RATHER THAN A PICTURE, for the
+   buffers that are too big to come back as hex. GET_MEM is capped at
+   8,192 bytes and costs two characters a byte, so the ruins blur
+   buffer - 160 x 100 x 4 - is eight round trips and 128 KB of reply
+   as a read, and one call as a file.
+
+   THE FRAME IS NOT WHERE THE LIGHT IS, in that part. te_frame copies
+   its blur output into the Relic_Frame, hands the light to fog_pixel
+   and sets the frame byte to zero:
+
+       dst[PX_R] = s[PX_R];  dst[PX_G] = s[PX_G];
+       dst[PX_B] = s[PX_B];  dst[PX_LIGHT] = 0;
+       fog_pixel(dst, (s32)s[PX_LIGHT]);
+
+   So a raw frame would carry no depth at all for the ruins, and
+   g_prev is the buffer that does - pre-fog, at the demo's own 160 x
+   100, four bytes a pixel [verified].
+
+   deref FOLLOWS A POINTER VARIABLE rather than reading it. g_prev is
+   a u8 *, so without it the dump is the four bytes of the pointer.
+
+   TWO OFFSETS, BECAUSE THERE ARE TWO PLACES TO BE. off is address
+   arithmetic on the symbol and means there what it means in GET_MEM;
+   skip is applied last, after any deref, and is an offset into the
+   buffer being written. One key doing both would be applied twice
+   and wrong once.
+
+   The copy runs a chunk at a time under SEH, so a region that runs
+   off the end of what is mapped stops and reports written= short of
+   len= with truncated=1. A short file claiming to be whole would be
+   worse than none. nonzero= counts what is not zero, because a
+   buffer full of zeroes is the usual way of learning the data went
+   somewhere else.
+
+   THE AGENT'S RENDER PATH IS THE REFERENCE PATH. Driven to the same
+   part, tick and resolution, DUMP and the batch -p/-t/-n mode
+   produce byte-identical files [verified, part 2.1 at tick 59,
+   640x256, 491,535 bytes].
+
+5.4.  Symbols
+
+       SYM name=NAME[#OBJ] [force=1]    look one up
+       SYM addr=0xADDR                  what is at an address
+       SYMS [obj=] [pfx=] [kind=f|d] [max=200]
+
+       SYM name=spline
+         OK lines=1
+         name=spline#part_temple.obj addr=0x001AC1B0 bound=0x001AC310
+             kind=f size=352
+
+   bound IS A BOUND, NOT AN END: it is the next symbol by address,
+   so the gap can hold padding or something the map never listed.
+   With the static table parsed the gaps are much tighter than the
+   public table alone would give, but the distinction still holds.
+
+   SYM addr= answers in the form name+0xNN#obj, which is also what
+   the crash report uses.
+
+   The SYMS header is padded to a fixed width. A count cannot be
+   known before the rows are filtered, and rewriting a shorter
+   header afterwards would shift every row under it; the client
+   trims the padding.
+
+5.5.  Memory
+
+       GET_MEM (sym=NAME[#OBJ] | at=0xADDR) [off=N] [len=4]
+       SET_MEM (sym=NAME[#OBJ] | at=0xADDR) [off=N] data=HEX
+
+   off APPLIES TO BOTH FORMS, and the reply names the address it
+   actually used. That is the only check there is: an offset that
+   went missing would put a read, and a WRITE, at the base address
+   and say so in a line that reads as agreement.
+
+   Bytes are hex in address order, up to AGENT_MEM_MAX. Both verbs
+   go through the pump, so a read cannot catch a frame half
+   rendered.
+
+   THE AGENT KNOWS NO TYPES, by choice. The map gives a name, an
+   address and a bound, and nothing else - no layout and no field
+   names. The client declares the length it wants and the layout
+   lives in docs/ and in src/, which is where it already has a home.
+   A struct table inside agent.c would be a second copy and would go
+   stale.
+
+   The access is wrapped in SEH rather than checked with
+   VirtualQuery: a page can be unmapped between the query and the
+   access, so catching the fault is the only check that cannot be
+   raced.
+
+
+6.  Hooks
+
+   Function instrumentation that does not stop the demo. They are the
+   right tool whenever stopping would change the answer.
+
+       SET_HOOK name=NAME[#OBJ] [args=N] [max=N] [tag=T]
+                [enter=LIST] [exit=LIST|delta]
+                [when=ITEM OP VALUE] [agg=ITEM] [force=1]
+       CLEAR_HOOK id=N|all
+       CLEAR_TRACE
+       LIST_HOOK
+       GET_TRACE [max=64]
+
+   An example of each, against the sand:
+
+       SET_HOOK name=sa_step args=1 enter=a0 tag=tick
+         OK id=1 name=sa_step#part_sand.obj start=0x00429F60
+            bound=0x00429FF0 args=1 max=0 enter=1 ebytes=4 exit=0
+            xbytes=0 delta=0 verified=penter
+       LIST_HOOK
+         OK lines=1 armed=1 exits=0 penter=2229064 pexit=2229064
+            pending=0 dropped_full=0 unpaired=0
+         id=1 name=sa_step#part_sand.obj start=0x00429F60
+             bound=0x00429FF0 args=1 hits=5 max=0 enter=a0 exit=-
+             delta=0 tag=tick
+       GET_TRACE
+         OK lines=5 bytes=20 pending=0 dropped_full=0 unpaired=0
+         seq=1 tick=1 id=1 kind=enter len=4 data=01000000
+         seq=2 tick=2 id=1 kind=enter len=4 data=02000000
+       CLEAR_HOOK id=all
+         OK removed=1 armed=0 exits=0
+
+6.1.  hits=0 is not an answer
+
+   A HOOK THAT NEVER FIRED LOOKS EXACTLY LIKE A FUNCTION THAT DID
+   NOTHING WRONG. GET_TRACE returns lines=0, unpaired=0 and no
+   drops, which reads as a clean result and is not one.
+
+   ERR_NO_PENTER catches the uninstrumented file, but nothing
+   catches a hook armed on a function the current part does not
+   call - cast in sprout.obj arms and verifies and then sits at
+   hits=0 for a thousand ticks of 2.4, because the octree is not
+   wired into that scene [observed]. Nor does anything catch a
+   hook armed AFTER the work it wanted to see: the build_ routines
+   of the ruins run when the part is entered, so arming and then
+   stepping shows five of sixteen temple functions firing, and
+   arming and then GOTO shows fifteen [observed].
+
+   So read hits before reading records. A conclusion drawn from an
+   empty trace is a conclusion about nothing.
+
+6.2.  No locks, because there is one thread
+
+   THE PRODUCER AND THE CONSUMER ARE THE SAME THREAD. _penter fires
+   inside Demo_Frame, which Agent_Pump calls; SET_HOOK and GET_TRACE
+   are dispatched by that same pump. So arming cannot race dispatch,
+   and the ring is never entered from two places at once.
+
+   A MULTI-THREADED TARGET WOULD NEED a critical section around the
+   ring, a TryEnter in dispatch so no worker ever waits on the pipe,
+   and a counted drop for a busy lock. None of that exists here, and
+   the absence is a consequence of 1.1 rather than an oversight.
+
+   What that leaves is one guard: a flag that stops a capture
+   re-entering itself. Nothing under src/ can reach one, because
+   agent.c is never built with /Gh, so it is insurance against that
+   changing rather than a live concern.
+
+6.3.  The capture grammar
+
+   A capture list is comma separated, and the same forms work on
+   entry and on exit:
+
+   +------------------+---------------------------------------------+
+   | Item             | Means                                       |
+   +==================+=============================================+
+   | aN               | argument N, the 4 bytes at [esp+8+4N]       |
+   +------------------+---------------------------------------------+
+   | @sym#obj+OFF:LEN | LEN bytes at a symbol plus an offset        |
+   +------------------+---------------------------------------------+
+   | 0xADDR:LEN       | LEN bytes at a literal address              |
+   +------------------+---------------------------------------------+
+   | *aN+OFF:LEN      | argument N as a pointer, plus an offset     |
+   +------------------+---------------------------------------------+
+   | *ret+OFF:LEN     | exit only: follow what it returned          |
+   +------------------+---------------------------------------------+
+   | caller           | where the call came from, named at drain    |
+   +------------------+---------------------------------------------+
+   | ret              | exit only: the 4 bytes it returns           |
+   +------------------+---------------------------------------------+
+   | delta            | exit only: what changed since entry         |
+   +------------------+---------------------------------------------+
+
+   NINE ARGUMENTS, AND aN IS ONE DIGIT. fill_rows in the ruins takes
+   col, from, to, tex, u0, du, v0, dv and light, which is a0 to a8 -
+   the cap is nine because that is what the tree actually needs and
+   because a two-digit aN would complicate the item parser for
+   nothing. The capture list is nine for the same reason, so all
+   nine arguments of a call come back in one 36-byte record.
+
+   Nine items and 16,384 bytes a list, checked when armed. aN, ret
+   and caller take no :LEN - all three are four bytes by definition -
+   and the +OFF is optional everywhere it appears.
+
+   caller IS frame[1], WHICH THE MAP CAN NEVER TELL YOU. frame[0] is
+   the stub's own return address, five bytes into the hooked
+   function; the word above it is that function's return address,
+   which is the instruction after the call. GET_TRACE turns it into
+   a name when the trace is drained rather than when it is taken,
+   because resolving against 1,192 symbols costs a scan - per
+   captured call on a per-pixel function that is 18 million
+   comparisons a frame, where per drained record it is bounded by
+   max. A trace outliving the hook that made it loses the name
+   rather than inventing one.
+
+   It resolves to the CALL SITE, not just the function: project_row
+   reports draw_span+0x30 and draw_span+0x43, which are its two call
+   sites [verified].
+
+   74 of the instrumented functions return a pointer, which is what
+   *ret is for - for the node and cell lookups the thing pointed at
+   IS the answer. float and double returns would need the x87 stack
+   and 64-bit ones edx, and neither is supported because neither
+   exists: across the 22 instrumented files there are no float,
+   double, 64-bit or by-value struct returns at all [verified].
+
+   ret ON A u8 OR s16 FUNCTION GIVES FOUR BYTES OF WHICH ONE OR TWO
+   MEAN ANYTHING. The rest is whatever was in eax; the client masks.
+
+   ret IS THE SAVED eax AND IS EXIT ONLY. pushad pushes eax first of
+   the eight, so it lies deepest: four bytes below the frame the stub
+   recovers. On entry that same slot holds whatever the caller left
+   in eax, which is why asking for it there is refused rather than
+   served a stale register dressed up as a result.
+
+   ARGUMENTS BEGIN AT [esp+8], NOT [esp+4]. The call precedes the
+   prologue, so when _penter runs the hooked function has not touched
+   the stack: its own return address is still on top of its
+   arguments, and _penter's return address is above that.
+
+       [esp+0]   return address into the hooked function, start+5
+       [esp+4]   the hooked function's own return address
+       [esp+8]   argument 0
+
+   Reading [esp+4] as argument 0 yields a code address, which looks
+   enough like a pointer to pass inspection. The check that settles
+   it is a function whose argument is already known from elsewhere:
+   sa_step(s32 tick) captured over five steps gives 1, 2, 3, 4, 5
+   against a clock that read the same [verified].
+
+   WHEN AN ITEM RESOLVES IS THE DIFFERENCE BETWEEN @ AND *. A
+   global's address is knowable when the hook is armed, so @sym and
+   0xADDR are resolved then and a mistyped symbol fails at SET_HOOK.
+   The struct a function was handed is not knowable until it is
+   handed one, so *aN resolves per call.
+
+   A PER-CALL READ THAT FAULTS IS ZERO FILLED, NOT SKIPPED, so every
+   record keeps the length its list implies and the client can split
+   it knowing only what it asked for. A NULL pointer argument
+   therefore reads as a run of zeroes, and capturing aN alongside
+   *aN is how that is told from genuinely zeroed memory.
+
+   data= is raw little-endian hex in list order. A float arrives as
+   its bit pattern, because formatting one would mean touching the
+   FPU from instrumentation - the one thing a hook must not do.
+
+6.4.  Recording only what was asked for
+
+   A capture list says WHAT to read. when= says WHETHER to keep the
+   call at all, as one token - ret==-1, a0>1000 - over == != < <= >
+   >=, compared as signed 32-bit.
+
+   WHICH HALF IT IS DECIDED ON COMES FROM THE ITEM. A test on ret
+   cannot be answered until the function has run, so it is an exit
+   test; anything else is knowable on the way in and is tested
+   there. A symbol name can hold none of < > ! = because the map
+   filter drops any that could, so the first of those characters is
+   the operator and never part of the item.
+
+   THE ENTER RECORD IS HELD, NOT STREAMED, WHEN THE TEST IS AT EXIT.
+   An unconditional enter record would already be in the ring by the
+   time ret existed, so the pair would be half filtered and the
+   trace would carry enters with no exits. Holding it costs one
+   buffer per depth level, which the delta snapshot already pays
+   for. Filtered calls therefore leave nothing at all behind.
+
+   What that is worth: project_row over one frame of the ruins is
+   15,006 calls, of which 39 refuse a row. when=ret==-1 records
+   those 39 and nothing else [verified].
+
+6.5.  Counting without recording
+
+   agg=ITEM totals one scalar over every call that passes the
+   filter and writes no record at all. LIST_HOOK reports n, min, max
+   and sum.
+
+   THIS IS THE ONLY WAY TO MEASURE A PER-PIXEL FUNCTION. The ring
+   holds about 37,000 records and project_row alone fills it in two
+   frames, yet the question asked of it was four numbers. The same
+   four come out of agg with an empty ring:
+
+       SET_HOOK name=project_row args=2 agg=a1
+         n=15006 min=832 max=32767   records=0
+
+   max BOUNDS WHAT IS RECORDED AND NEVER WHAT IS COUNTED, so
+   "keep the first five and total them all" is askable and reads
+   exactly that way: hits=15006 recs=5 n=15006 [verified].
+
+   An enter-side total under an exit-side filter - agg=a1
+   when=ret==-1, the dist values that cause a refusal - waits in the
+   live entry with the held enter record and is committed when the
+   filter decides.
+
+   THE SUM IS AN INTEGER AND NEVER A double. The stub saves the
+   general registers and the flags and NOT the x87 stack, which is
+   the same reason a captured float is emitted as its bit pattern
+   rather than formatted.
+
+6.6.  The record, and the ring
+
+   One megabyte, variable length records, oldest first, drained by
+   GET_TRACE. Each carries a sequence number, the demo tick it fired
+   on, the hook id, which half it is, and its payload.
+
+   The tick rather than a timestamp, because it is the number every
+   other verb reports and it is deterministic - two runs of the same
+   part produce the same ticks. Several records share a tick; seq is
+   what orders them.
+
+   A FLAT FIFO, COMPACTED WHEN DRAINED, not a circular buffer. A
+   circular one has to split a record across the wrap, and all that
+   buys is the few bytes a compaction moves - which happens on
+   GET_TRACE, on the thread that is already there.
+
+   A FULL RING DROPS THE NEWEST RECORD and counts it. Discarding the
+   oldest would mean parsing forward from the read cursor to find
+   where it ends, on the render thread, to make room for a record
+   nobody has asked for yet.
+
+   SIZING IS THE REAL CONSTRAINT, and a per-pixel function shows it
+   at once: project_row in the ruins is called 30,334 times in two
+   frames, which at 28 bytes a record is 850 KB. Six frames of it
+   overflow - pending=37449 dropped_full=54677 [verified]. The hit
+   count keeps counting through a drop, so hits against pending plus
+   dropped_full is what says how much of the truth a trace holds. A
+   silently truncated trace would read as a function that did
+   nothing.
+
+   max=N on a hook bounds the CAPTURE and not the counting. hits
+   reports every call, recs what was kept, and records stop at max.
+   That is what makes a hook on something hot affordable.
+
+   CLEAR_TRACE throws the ring away unread. A hook armed on a
+   per-pixel function fills it in one frame, and without this the
+   only way back to a clean trace is pulling 37,000 records through
+   the pipe to look at none of them. The drop counter goes with
+   them because it describes that ring; unpaired does not, because
+   it describes the pairing and outlives any one trace.
+
+6.7.  Exit, pairing and delta
+
+   /GH emits its call after the epilogue, so where an entry return
+   address is always start+5, an exit return address is wherever the
+   ret happens to sit. Entry therefore matches on equality and exit
+   on a range against [start, bound) - and exit keeps its own
+   dispatch set, so a hook with nothing to do there costs nothing at
+   every return in an instrumented file.
+
+   The stack is back to its entry shape by then, so arguments are
+   still at [esp+8] and one capture routine serves both halves.
+
+   PAIRING IS BY THE CALLING THREAD'S OWN STACK, not by address, so
+   a recursive function pairs correctly. An exit searches down the
+   live stack for its slot and discards anything above it, because a
+   missed exit must not strand every later one.
+
+   unpaired IS NOT ZERO BY DEFINITION. bound is the next map symbol,
+   so a static living in the gap after a hooked function has its
+   exit misattributed to it. Counting them is what makes that
+   visible.
+
+   WHY delta EXISTS. The question a hook is asked is almost always
+   what the function did to a struct, and two full dumps answer it
+   only after the client diffs both. Snapshotting on entry and
+   emitting only the changed ranges on exit answers it directly.
+   Against sa_step with an eight-byte enter list, the delta is the
+   one byte of g_tick that moved [verified].
+
+   A delta payload is a run of [u16 off][u16 len][bytes], little
+   endian, offsets into the ENTER list. exit=delta therefore needs
+   an enter list to diff and is refused without one. Full dumps stay
+   alongside it, because comparing against the original needs
+   absolute values at a known point rather than a difference.
+
+6.8.  SET_HOOK proves it reaches _penter
+
+   /Gh IS PER FILE, AND THAT IS THE TRAP. A hook on a function in a
+   file built without it would arm, never fire, and be
+   indistinguishable from a function that is never called.
+
+   So the call site is read rather than assumed. The first five bytes
+   of an instrumented function are a relative call; the target is
+   followed through up to three jmp thunks and compared against
+   _penter. A function that cannot be hooked is refused by name,
+   with the address it did reach:
+
+       SET_HOOK name=Demo_Frame
+         ERR_NO_PENTER name=Demo_Frame#demo.obj start=0x0041BC90
+            reached=0x00000000 - that object was not built with /Gh
+
+   THE THUNK IS ON BOTH SIDES OF THAT COMPARISON. Incremental
+   linking routes the call site through a jmp, and taking the address
+   of _penter in C can hand back that same thunk, so each side is
+   followed to its real target before the comparison. Following only
+   one makes the check a coin toss: it passes today and fails after
+   a full link.
+
+   A data symbol is refused too - ERR_NOT_CODE - which the map's
+   flag column makes free, and a second hook on an address that
+   already has one is ERR_EXISTS rather than two slots firing on one
+   call.
+
+7.  Errors
+
+   +------------------+---------------------------------------------+
+   | ERR_             | Means                                       |
+   +==================+=============================================+
+   | NO_VERB          | no such verb                                |
+   | BAD_ARG          | a key is missing or will not parse          |
+   | RANGE            | a value, length or address is out of bounds |
+   | NO_SYMBOL        | the map does not name it                    |
+   | AMBIGUOUS        | the name needs its #obj - see 3.4           |
+   | MAP_STALE        | the map is older than the exe - see 3.5     |
+   | NO_SEEK          | RUN_TO cannot go backwards - see 5.2        |
+   | NO_FRAME         | nothing has been rendered yet               |
+   | DUMP_LIMIT       | AGENT_DUMP_MAX reached                      |
+   | IO               | the file could not be written               |
+   | RESOLUTION       | the frame could not be allocated            |
+   | NO_PENTER        | that object was not built with /Gh - 6.8    |
+   +------------------+---------------------------------------------+
+   | NOT_CODE         | a hook needs a function, not a datum        |
+   +------------------+---------------------------------------------+
+   | EXISTS           | that address already carries a hook         |
+   +------------------+---------------------------------------------+
+   | LIMIT            | the reply would not fit                     |
+   | INTERNAL         | the pump produced no reply                  |
+   +------------------+---------------------------------------------+
+
+
+8.  The crash report
+
+   An unhandled exception is caught, turned into a symbol name
+   through the same table SYM uses, and written beside the exe as
+   <exe>.crash.txt. STATUS reports that path, so the MCP server
+   learns it from any call and can explain a pipe that drops instead
+   of merely reporting it.
+
+       code=0xC0000005 pc=0x001AC204 at=spline+0x54#part_temple.obj
+       part=11 tick=41
+
+   TO A FILE AND NOT THE PIPE. An unsolicited line would arrive in
+   the middle of a reply the client was parsing and desynchronise
+   the protocol, which is a worse failure than the crash it was
+   reporting.
+
+
+9.  What this refuses to do
+
+   Breakpoints, single-stepping instructions, and reading registers.
+   A real debugger is attached for that, and nothing here would do
+   it better.
+
+   Keystroke injection. src/host.h already exposes the controls -
+   Demo_GotoPart, Demo_StepPart, Demo_Frame, Demo_SetAutoAdvance -
+   and main_sdl.c's bracket keys are themselves just a binding of
+   those. The agent binds the same functions to verbs; synthesising
+   input would be a second, worse path to the same calls.
+
+   Anything in the SDL host. See 1.2.
+
+
+10.  Open questions
+
+   o  Should gfx.c and rast.c ever get /Gh, for one investigation
+      at a time? Per 4.3 the per-call cost is 12 ns and the call
+      rate is what decides, so a per-pixel file would land far
+      above the ruins. Probably by hand and never committed - but
+      a hook on Gfx_GlowBlob would answer questions nothing else
+      can.
+
+   o  The SDL host needs the pump non-blocking and its own pause
+      flag reconciled with g_paused. Worth doing once the verbs
+      settle; it also brings back the need to keep two /Gh file
+      lists in step, since the two projects compile the same sources
+      into separate objects.
+
+   o  Nothing lists which objects carry /Gh, so finding a hookable
+      function is SET_HOOK and a refusal. The map holds the object
+      per symbol, so SYMS could mark them - but only the call-site
+      probe can prove it, so that would be a hint and not an answer.
+
+   o  A predicate tests one scalar against one constant. Two
+      conditions, or a range, need two hooks or a client that
+      filters what it drained.
+
+   o  when= on a global is decided on entry, following the item.
+      "record only if this global ended up at X" is not expressible;
+      it would need the half to be stated rather than inferred.
+
+   A BREAKPOINT THAT NEVER FIRES IS USUALLY TELLING THE TRUTH. Two
+   traps make a silent breakpoint look like a broken one, and both
+   were mistaken for a tool bug here:
+
+   AN UNCONDITIONAL BREAKPOINT HALTS ON ITS FIRST HIT, so amiga_frames
+   stops early, leaves the rest of the count OWED and reports fewer
+   frames than asked - which reads as a failed run rather than a hit.
+
+   A STATE LOAD IS FOLLOWED BY DEAD FRAMES. The demo renders nothing
+   for about three frames after a restore, so a small n right after
+   one can step past no draw at all and a breakpoint inside the
+   renderer correctly takes no hits.
+
+   Breakpoints DO fire under amiga_frames [verified]: armed after a
+   restore and ten frames of settling, an unconditional breakpoint on
+   the cloud warp halted mid-count with hits=1 passed=1 and owed=1.
+   Check armed= and the owed= line before concluding anything.
+
+   AMIGA_HITS_COUNT REPORTS STALE COUNTERS. After amiga_hits_clear
+   drains records - it says how many it discarded - the counter view
+   still returns those same totals and PCs, while amiga_hits itself
+   correctly answers "no hits logged" [verified]. It reads as a
+   result from the watch just armed. Use amiga_hits, which drains,
+   rather than the counter view, or cross-check the two.
+
+   A READ COULD PRECEDE ITS STATE LOAD, and that half of it is FIXED.
+   amiga_state_load used to wait for the restore only when the guest
+   was already paused; a load issued while it was running returned at
+   once and the restore landed somewhere in the next command or two.
+   It now waits in both cases.
+
+   BOTH PATHS ARE VERIFIED. A load issued while the guest runs now
+   returns with the restore already in memory: from frame 160 the
+   reply reads "ok restoring 7 / now: ok running / ok pong 2
+   running", and the very next read gives the restored state's phase
+   word rather than the previous one's [verified].
+
+   [open] ONE BAD READING HERE IS STILL NOT EXPLAINED BY THAT. The
+   sphere texture reads rotated on every load, but one reading of it
+   came back in the file's byte order - and the load
+   before it took the paused path that always waited, with several
+   minutes of unrelated work between the two and the guest paused
+   throughout. So a race in the restore does not account for it.
+   Until it does, treat a surprising value as suspect: load the slot
+   twice and compare before building on it.
+
+   A SLOT CAN READ "no state file" WHILE ITS FILE IS ON DISK, which
+   means the emulator is being restarted underneath you rather than
+   that anything is lost. The emulator keeps them under its own
+   save-state directory; check there before believing one has gone.
+
+   The guard is cheap: read a value whose expected content you know
+   - a phase word, a counter - before trusting a reading, or load
+   the slot twice and compare. A reading that disagrees with a
+   second load of the same slot is the reading, not the demo.
+
+   AMIGA_PING REPORTS SERVER STALENESS. It prints the tool count and
+   the server's start time, and says loudly if mcp_server.py, dbg.py
+   or symbols.py have changed since import - so "am I running the
+   fix?" is one call.

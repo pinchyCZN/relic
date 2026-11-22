@@ -1,0 +1,122 @@
+# PCDEMOS/relic - what does not belong in the repository
+#
+# Two different reasons live in this file and they are not the same
+# weight. The first block is a LEGAL boundary; the rest is housekeeping.
+
+# ---------------------------------------------------------------------
+# The 1998 release itself. NOT REDISTRIBUTED.
+#
+# CLAUDE.md's legal note: this is a personal interoperability and
+# preservation effort, and the original executable and data file are not
+# redistributed. Notes and reconstructed source are our own work product
+# and those ARE committed.
+#
+#   reverse/ghidra/relic, relic.dat   the originals
+#   reverse/extracted/                every byte of it, carved out of
+#                                     relic.dat by datlist.py
+#   reverse/patched/                  the MEMF-cleared copy, which is the
+#                                     original with seven bytes changed
+#
+# All of it regenerates from files the user already has:
+#   py -3.10 tools/dat/datlist.py --extract reverse/extracted
+#   py -3.10 tools/hunk/hunk_memf_any.py reverse/ghidra/relic \
+#                                        reverse/patched/relic_anymem
+# ---------------------------------------------------------------------
+reverse/ghidra/
+reverse/extracted/
+reverse/patched/
+
+# ---------------------------------------------------------------------
+# The Ghidra project database.
+#
+# Covered by reverse/ghidra/ above; repeated by pattern so a project
+# moved to another directory stays ignored. ~16 MB that rebuilds from an
+# import, plus per-machine lock files and scratch .ps files Ghidra leaves
+# inside the .rep.
+#
+# NOTE: the database is NOT a build artifact - it holds every name, type
+# and comment this project has produced, and nothing else is a copy of it
+# (CLAUDE.md rule 6.4). It is excluded because it is large and binary,
+# not because it is disposable. reverse/exports/ is the committed,
+# diffable projection of it and IS tracked.
+# ---------------------------------------------------------------------
+*.gpr
+*.rep/
+*.lock
+*.lock~
+
+# ---------------------------------------------------------------------
+# The MCP server list.
+#
+# It names one machine's layout - an interpreter, a bridge script that
+# lives outside this repository - so it cannot be shared.
+# .mcp.json.example is the tracked copy, with every path replaced by a
+# <placeholder>; copy it and fill them in.
+#
+# NO PORT IS PINNED IN EITHER. Three Ghidra projects can share a machine
+# and the port a given one answers on depends on which started first, so
+# a pin fails by connecting to the WRONG DATABASE rather than by
+# erroring. CLAUDE.md 2.1.
+# ---------------------------------------------------------------------
+.mcp.json
+
+# ---------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---------------------------------------------------------------------
+# Local tool state and scratch
+#
+# Rule 14 puts scratch files in %TEMP%, so these are a backstop for the
+# times that slips rather than an expected location.
+# ---------------------------------------------------------------------
+.claude/settings.local.json
+*.png
+*.ppm
+*.bin
+!tools/**/*.py
+
+# ---------------------------------------------------------------------
+# Editor and OS droppings
+# ---------------------------------------------------------------------
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------
+# C build output. The sources under src/ are tracked; nothing a
+# compiler makes from them is.
+build/
+out/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.suo
+*.user
+.vs/
+CMakeFiles/
+CMakeCache.txt
+
+# NOT the project files - src/relic.sln and the two .vcxproj are
+# HAND WRITTEN and tracked. There is no CMake here: MSVC is the
+# Windows build and tools/build_web.sh is the emscripten one, and
+# neither generates the other.
+
+# SDL2 is a third-party binary distribution copied in from the
+# waverace project. The headers and libs are not ours to commit.
+src/third_party/SDL/
+
+# The journey has a home so it stops leaking into docs/ - rule 10.2.
+# Nothing in it is tracked except the file that says what it is for.
+notes/*
+!notes/README.txt

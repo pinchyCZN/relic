@@ -1,0 +1,280 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                            THE RENDERER
+
+
+Abstract
+
+   RELIC draws into a CHUNKY 32-BIT framebuffer 160 pixels wide, not
+   into a planar Amiga bitmap. Textured polygons are filled by a
+   two-phase scanline rasteriser whose inner loop is nine instructions
+   long and contains no multiply, no divide and no depth test.
+
+   The texture index is built by merging two registers rather than
+   computing v*256+u, which is what fixes the texture size at 256x256
+   and the texel at 4 bytes - independently of the asset data.
+
+   This answers how a textured triangle is drawn. Ham8_EncodeFrame
+   then consumes this exact buffer and turns it into a HAM8 screen -
+   subsystems/display.txt section 8.
+
+Table of Contents
+
+   1. The framebuffer
+   2. The textured span filler
+   3. The texel index trick
+   4. The full-screen affine warp
+      4.1. What the reconstruction does with all this
+   5. What is still missing
+   6. Open questions
+
+1.  The framebuffer
+
+   +------------------+--------------+------------------------------------+
+   | Property         | Value        | Evidence                           |
+   +==================+==============+====================================+
+   | bytes per pixel  |            4 | lea (0,A2,D0w*0x4),A3 scales x by  |
+   |                  |              | four; the store is a move.l        |
+   +------------------+--------------+------------------------------------+
+   | bytes per row    | 0x280 = 640  | move.l #0x280,D7 then adda.l D7,A2 |
+   |                  |              | to step one scanline               |
+   +------------------+--------------+------------------------------------+
+   | pixels per row   |          160 | 640 / 4                            |
+   +------------------+--------------+------------------------------------+
+   | rows             |          100 | Warp_FullscreenAffine divides its  |
+   |                  |              | spans by 0xa0 and 0x64 and its dbf |
+   |                  |              | counters are 0x9f and 0x63         |
+   +------------------+--------------+------------------------------------+
+   | base pointer     | 0x002f101c   | g_pFrameBuffer, about 58 readers   |
+   +------------------+--------------+------------------------------------+
+
+   All [verified].
+
+   160 x 100 AT FOUR BYTES IS 64,000 BYTES, and it is chunky, so it is
+   not something the Amiga display hardware can show directly. Two
+   independent routines agree on the size: the span filler's row stride
+   and the warp's divisors.
+
+   That size is also what the readme describes from the other end. It
+   says snapshots are 640 x 98 and asks that they be scaled to 160 x 98
+   "so they are displayed in the correct aspect ratio" - overview.txt
+   section 5. A 160-pixel-wide render matches the 160 in that
+   instruction, and the demo's "2x2 mode" is the pixel doubling that
+   gets it onto a 320-wide display.
+
+   THE PIXEL IS THE SAME FOUR BYTES AS A TEXEL. The span filler copies
+   a texel to the framebuffer with one move.l and no conversion, so the
+   framebuffer holds (R, G, pad, B) with six-bit channels exactly as
+   formats/textures.txt describes. Render target and texture share one
+   format, which is why no sampler-side conversion exists.
+
+2.  The textured span filler
+
+   Rast_FillSpansTextured, at 0x002cabce. Phase two of a two-phase
+   fill: an edge walker emits one span record per scanline into a
+   list, then this consumes the list.
+
+   IT IS NOT INSIDE Rast_TexturedPoly (0x002caef6) - it sits BEFORE
+   it - and nothing references it, so its caller is reached
+   indirectly, through one of the fetch variants below. That is why
+   the setup of D1, D3, D4 and D5 is not established: see section 3.
+
+   Inputs:
+
+    A1   -> the span list          A6  -> one past its end
+    A0   texture base, loaded from g_pTextureBase
+    A2   += g_pFrameBuffer
+    D1   du/dx                     D5  dv/dx
+
+   The span record is 16 bytes, read in one movem:
+
+    movem.l (A1)+, { D0 D2 D3 D4 }
+
+    D0   x_start, in the HIGH word - swapped before use
+    D2   x_end,   in the HIGH word
+    D3   v
+    D4   u, integer part in the low byte
+
+   The loop, in full:
+
+       .nextspan
+         movem.l (A1)+,{D0,D2,D3,D4}
+         swap    D0
+         swap    D2
+         sub.w   D0w,D2w            ; width
+         subq.w  #1,D2w             ; for dbf
+         blt     .skip              ; empty span
+         lea     (0,A2,D0w*4),A3    ; A3 = row + x_start*4
+       .pixel
+         move.w  D3w,D6w            ; D6 low word := v
+         add.l   D5,D3              ; v += dv/dx
+         move.b  D4b,D6b            ; D6 low byte := u
+         addx.w  D1w,D4w            ; u += du/dx, with carry
+         move.l  (0,A0,D6*4),(A3)+  ; texel -> framebuffer
+         dbf     D2w,.pixel
+       .skip
+         adda.l  D7,A2              ; next scanline, +640
+         cmpa.l  A6,A1
+         blt     .nextspan
+         rts
+
+   NINE INSTRUCTIONS PER PIXEL AND NOT ONE OF THEM IS A MULTIPLY, A
+   DIVIDE, A SHIFT OR A COMPARE. There is no perspective divide, no
+   clipping test and no z-buffer read in the inner loop. Depth and
+   clipping are therefore resolved before this routine runs - by
+   ordering, by the edge walker, or not at all.
+
+   Six texel-fetch sites exist in Rast_TexturedPoly, so there are
+   several specialised variants. One of them stores with -(A5) instead
+   of (A3)+, which is a right-to-left span.
+
+3.  The texel index trick
+
+   This is the part worth transcribing carefully, because it is where a
+   reconstruction will silently diverge.
+
+       move.w  D3w,D6w        D6 low WORD := low word of v
+       move.b  D4b,D6b        D6 low BYTE := low byte of u
+
+   After both, D6 = (v & 0xff00) | (u & 0x00ff). The byte that
+   survives from v is its bits 8..15 and the byte from u is its bits
+   0..7, so D6 is v_int * 256 + u_int with no arithmetic at all. The
+   addressing mode then scales by the texel size:
+
+       move.l (0,A0,D6*0x4),(A3)+
+
+   So THE TEXTURE IS 256 x 256 AND A TEXEL IS 4 BYTES, read out of the
+   renderer rather than guessed from chunk sizes. formats/textures.txt
+   reached the same 4 bytes from the data; these are independent.
+
+   THE CONSEQUENCE THAT MATTERS: u and v WRAP, and they wrap for free.
+   u is taken modulo 256 by the byte move and v by the word move.
+   There is no clamp and no bounds check anywhere, so a polygon whose
+   coordinates run off the texture tiles rather than smearing or
+   crashing. Any reconstruction must mask, not clamp.
+
+   u AND v ARE NOT PLAIN 16.16. The fraction is carried in the bits
+   the merge discards and the carry is folded back with addx.w, so
+   stepping them is add.l followed by addx.w rather than a single add.
+   Warp_FullscreenAffine prepares the same form with ror.l #8. Reading
+   D4 as straight 16.16 gives a picture that looks almost right and
+   drifts across the span.
+
+   WHICH BITS CARRY WHICH FRACTION IS OPEN, and it cannot be settled
+   from the loop alone. The instructions fix only this much:
+
+       v_int = bits 8..15 of D3        move.w D3w,D6w
+       u_int = bits 0..7  of D4        move.b D4b,D6b
+       D3 steps by D5 with add.l, and its carry out of bit 31 is the X
+       that addx.w folds into D4w
+
+   A carry out of bit 31 is reachable only if D3's top half holds
+   something that overflows, so either u's fraction lives in D3 bits
+   16..31 - making (D4w : D3) one 48-bit accumulator - or v simply
+   never overflows and the addx is an add. The two differ in how the
+   span drifts, and choosing wrong is the divergence this section
+   warns about. Settling it needs the edge walker that writes the span
+   records, and that is reached through an unresolved indirect call.
+
+4.  The full-screen affine warp
+
+   Warp_FullscreenAffine (0x002d3f5c) is a second, simpler path: it
+   maps ONE texture over the entire framebuffer with no polygon
+   involved.
+
+   It projects three corners at +/-0x5000, +/-0x3200 through
+   maybe_Warp_ProjectCorner with g_WarpParamA and g_WarpParamB,
+   differences them to get spans, and divides by 160 and 100 to get the
+   per-pixel and per-row steps. It then biases the texture pointer by
+   0x20200 - which is (128*256 + 128) * 4, the centre texel of a
+   256x256 image - so its index is a signed offset from the middle.
+
+   The inner loop is the same merge trick and writes longwords straight
+   to g_pFrameBuffer, 160 across by 100 down.
+
+   maybe_Ship_DrawFullscreenHull (0x002cdaac) calls it with ship
+   texture 0. SO AT LEAST ONE SHOT OF THE SHIP IS A 2D WARP OF A
+   PRE-RENDERED HULL TEXTURE, NOT 3D GEOMETRY. That is worth knowing
+   before trying to reproduce the close-up pass with a polygon
+   renderer.
+
+4.1.  What the reconstruction does with all this
+
+   src/rast.c fills a triangle from three projected corners and three
+   (u, v) pairs, masking both to eight bits as section 3 requires.
+
+   THE AFFINE MAPPING IS NOT AN APPROXIMATION HERE. The perspective
+   divide happens once per VERTEX in Scene_TransformProject and the
+   span filler then steps u and v with a plain add, so interpolating
+   them linearly over the projected triangle IS the demo's model.
+   What is not transcribed is the fixed-point PACKING of that step -
+   section 3's open question - so a texel can be one off along a span.
+
+   src/uv.c generates the coordinates. ONLY FOUR OF THE NINE MODE BITS
+   ARE IMPLEMENTED: 0x0001, 0x0002, 0x4000 and 0x8000, which is every
+   bit any object Space_BuildObjects parameterises actually sets -
+   formats/geometry.txt section 6. Uv_Generate counts a pass asking
+   for anything else rather than silently drawing nothing.
+
+   WHAT THE PORT SKIPS IS THE WHOLE OF SECTION 8'S DISPLAY CHAIN, and
+   that is visible rather than academic. Ham8_EncodeFrame turns each
+   rendered pixel into FOUR HAM8 pixels, and HAM8 reaches a colour by
+   successive single-channel modifies, so a pixel very different from
+   its left neighbour takes the full four to converge. On a small
+   bright object over dark space that is a horizontal smear on the
+   leading edge. The port resolves its four-byte pixel straight to RGB
+   and so shows the frame the demo had BEFORE its display chain:
+   cleaner, and not what a viewer of the real thing sees. The spark
+   shower of effects/portal.txt section 4 is where the difference
+   shows most.
+
+5.  What is still missing
+
+   o WHAT DRIVES THE UV GENERATOR for parts other than the ship and
+     Scene_SetupPart14. Those two callers are read; the rest are not.
+
+   o THE SCENE IS A FLAT SLOT ARRAY AND A PREFIX COUNT.
+     Scene_SortAndDrawAll (0x002d28ca) walks g_SceneObjectCount
+     slots of 0x50 bytes from g_SceneObjects (0x0033be20), writes
+     {pointer, depth} pairs into g_SceneSortList, bubble-sorts them
+     by depth and dispatches each on its type word at +0x2c.
+
+     RAISING THE COUNT IS HOW GEOMETRY APPEARS. Slots past it are
+     built and simply not drawn, so a part can bring objects into
+     the scene for the cost of a counter - formats/geometry.txt
+     section 6 and parts.txt section 4.
+
+     g_SceneSortSkip holds the first N objects out of the sort so
+     they always draw first whatever their depth, which is how a
+     backdrop stays behind everything. Space_RunPart sets it to 2.
+
+   o HIDDEN SURFACES ARE HANDLED WITHOUT A DEPTH BUFFER AND WITHOUT A
+     PER-FRAME SORT. Mesh_SortFacesByC2 (0x002d17fc) orders each
+     object's faces once at setup by comp2 of their first vertex, and
+     Poly_DrawFaceList backface-culls per g_CullMode. Nothing else
+     resolves depth, so a part is only correct over the range of
+     angles it is actually seen from - which is affordable when the
+     camera path is authored.
+   o THE OTHER FIVE TEXEL-FETCH VARIANTS in Rast_TexturedPoly. One
+     stores right-to-left with -(A5); the rest are unread, and
+     whether any of them shades rather than copies is open. So is
+     maybe_Rast_FlatPoly (0x002cb3aa), the untextured path.
+   o Space_BuildObjects (0x002d0990) is the largest function in the
+     program at 2,300 bytes and reads the ship texture pointers at
+     four sites.
+
+6.  Open questions
+
+   o Is there any depth resolution at all, or are objects drawn in a
+     fixed order?
+   o What are the other five texel-fetch variants in
+     Rast_TexturedPoly for - direction, alignment, or shading?
+   o Does anything read the pad byte at texel+2? If a shaded variant
+     adds two texels with one add.l, that byte is the headroom that
+     makes it safe - formats/textures.txt section 2.
+   o How does the demo drop resolution as the camera pulls away
+     (parts.txt 2.8)? Nothing here switches texture size, so either a
+     different routine does it or the effect comes from the display
+     conversion.
+   o What sets g_WarpParamA and g_WarpParamB?

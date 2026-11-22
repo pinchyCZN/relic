@@ -1,0 +1,90 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                         THE BAKED STILLS
+
+
+Abstract
+
+   Act 2's fourth module shows two pre-rendered 24-bit pictures, a
+   landscape and a city street, baked into the executable. The
+   routines around them carry the name Dunes_, which is wrong.
+
+Table of Contents
+
+   1. Where It Sits
+   2. The DBOD Chunk
+   3. The Two Pictures
+   4. Open questions
+
+1.  Where It Sits
+
+   Demo_RunAct2 runs six modules and this is the fourth [verified,
+   0x0021f894]:
+
+       Sand_RunScene          the sand scene
+       TempleModule_Run   0   the temple, effects/temple.txt
+       SpaceModule_Run    1   the return flight, effects/return.txt
+       Stills_RunModule       THIS
+       SpaceModule_Run    2
+       TempleModule_Run   1   effects/temple.txt 11.9
+
+   Stills_RunModule 0x00313f6c is three calls: a setup,
+   Dunes_RunScene 0x00314304, and a teardown.
+
+   THE Dunes_ NAMES ARE A MISNOMER. They were assigned on a guess,
+   and the only dune field in the demo is the Sand_ module's, which
+   is a different family in the same code region and is already
+   transcribed as part_sand.c. Nothing in this module makes a dune.
+
+2.  The DBOD Chunk
+
+   Dunes_LoadDeepImage 0x0031426a scans forward from A0 for the
+   longword 'DBOD', skips eight bytes, and reads 16000 pixels of
+   THREE BYTES EACH, assembling a longword per pixel.
+
+   So a DBOD is a 160 by 100 TWENTY-FOUR BIT still. The size
+   longword that follows the tag reads 0xbb80, which is 160 x 100 x
+   3 exactly [verified].
+
+   A THIRD 'DBOD' IN THE IMAGE IS NOT A CHUNK. The one at
+   0x0031426c is this routine's own comparison immediate; searching
+   the bytes finds it before either real chunk.
+
+   There are none in relic.dat. Both pictures are in the
+   executable.
+
+3.  The Two Pictures
+
+   Dunes_RunScene calls the loader twice [verified, 0x0031435c and
+   0x003146a4]:
+
+       0x0031678c   a green landscape of rolling hills under a red
+                    and grey sky
+       0x003261d8   a city street in perspective, skyscrapers either
+                    side and a road running to the horizon
+
+   both decoded and viewed [observed]. They are photographs or
+   renders, not anything the demo generates.
+
+   The scene builds its HAM8 tables with 0x7f, 0x5f, 0x4f - all
+   three above the 0x3f the rest of the corpus uses, which is worth
+   understanding before anything is transcribed.
+
+4.  Open questions
+
+   -  WHAT THE SCENE DOES WITH THEM. Dunes_RunScene is 0x57e bytes
+      and only its opening is read: the hook, the HAM8 base, two
+      loads and a call to Dunes_DrawSprites 0x003148f8. Whether the
+      stills are shown plain, scrolled, or used as a backdrop for
+      something else is not known.
+
+   -  WHERE IT FALLS IN THE DEMO. The module is reached
+      unconditionally from Demo_RunAct2, so it does run, but it has
+      not been captured on hardware and has not been identified on
+      screen.
+
+   -  WHETHER THE Dunes_ FAMILY SHOULD BE RENAMED WHOLESALE. The
+      module entry reads Stills_RunModule and the loader carries a
+      plate saying the family is misnamed; the other four routines
+      read Dunes_.

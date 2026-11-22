@@ -1,0 +1,381 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                                RELIC
+
+
+Abstract
+
+   RELIC by Nerve Axis. Winner of the Amiga demo competition at
+   Assembly 1998, Helsinki, 7-9 August 1998. Released to Aminet
+   1998-08-11 as nvxrelic.
+
+   This document holds the demo's own facts: what it is, how the image
+   divides, which subsystems the binary names, and what is open.
+   CLAUDE.md holds the rules. Read this before any effect note.
+
+Table of Contents
+
+   1. The release
+   2. The files
+   3. The image
+   4. What the binary names about itself
+   5. Display and capture
+   6. Status
+   7. Open questions
+
+1.  The release
+
+   +--------------+--------------------------------------------------+
+   | Field        | Value                                            |
+   +==============+==================================================+
+   | Title        | Relic                                            |
+   +--------------+--------------------------------------------------+
+   | Group        | Nerve Axis                                       |
+   +--------------+--------------------------------------------------+
+   | Competition  | Assembly 1998, Amiga demo - winner               |
+   +--------------+--------------------------------------------------+
+   | Platform     | Amiga AGA, 68020 minimum, 68060 intended         |
+   +--------------+--------------------------------------------------+
+   | Version      | $VER: Relic... Nerve Axis 1998                   |
+   +--------------+--------------------------------------------------+
+
+   Credits, from the demo's own credits screen at SEG0+0x0186b1
+   [verified]:
+
+    Schlott             code
+    MeSoN               visuals
+    Ganja               audio and FX
+    Wade                pixelled art
+    zONE                additional design
+    cRASH, Halflob      additional design
+    Gozzer, Lil, Tikka  stress relief
+
+   Main design is credited to Schlott and Meson in the readme.
+
+   THE AUTHORS STATE THE DEMO IS 33,495 LINES OF ASSEMBLY CODE
+   [verified, nvxrelic.readme]. That is the single most useful fact in
+   the readme: it settles that there is no compiler runtime to fence
+   off, no library code to attribute, and no decompiler-friendly
+   calling convention to lean on. Every routine is one somebody wrote
+   by hand.
+
+   The readme also says the demo was built for a 68060 and that they
+   "make no apologies for this demo running like a dog on an Amiga
+   1200/020". So 68020 is the floor, not the target.
+
+2.  The files
+
+   +----------------------+-----------+------------+------------------------+
+   | File                 | Bytes     | Dated      | What                   |
+   +======================+===========+============+========================+
+   | relic                | 1,851,760 | 1998-08-11 | the executable         |
+   +----------------------+-----------+------------+------------------------+
+   | relic.dat            | 4,068,002 | 1998-08-11 | the asset archive      |
+   +----------------------+-----------+------------+------------------------+
+   | nvxrelic.readme      |    12,110 | 1998-08-11 | the Aminet readme      |
+   +----------------------+-----------+------------+------------------------+
+
+   All three are in reverse/ghidra/ and are the only copies. They are
+   stock and stay stock - CLAUDE.md rule 11.
+
+   relic.dat must sit in the same directory as the executable and no
+   assigns are needed [verified, nvxrelic.readme]. Its format is fully
+   read: formats/relic_dat.txt.
+
+    relic      MD5  b5c59ae6379d92131ce660a2027b77b7
+
+3.  The image
+
+   A stock AmigaDOS hunk load file, seven hunks, 6,605 relocations,
+   NOT crunched. The block-by-block reading is formats/hunk.txt; this
+   is the summary.
+
+    seg   type  img_lo       img_hi           bytes  pool  relocs
+    ----  ----  -----------  -----------  ---------  ----  ------
+    SEG0  CODE  0x0021f000   0x002c797b     690,556  FAST     238
+    SEG1  BSS   0x002c797c   0x002c8083       1,800  FAST       -
+    SEG2  CODE  0x002c8084   0x002c8233         432  CHIP       0
+    SEG3  CODE  0x002c8234   0x0033be1f     474,092  FAST   4,302
+    SEG4  BSS   0x0033be20   0x003431a7      29,576  FAST       -
+    SEG5  CODE  0x003431a8   0x003678cf     149,288  CHIP       0
+    SEG6  CODE  0x003678d0   0x003e43cf     510,720  FAST   2,065
+    ----  ----  -----------  -----------  ---------  ----  ------
+                                           1,856,464          6,605
+
+   THESE ADDRESSES ARE CONFIRMED AGAINST THE DATABASE [verified].
+   Ghidra's block names are CODE_00, BSS_01, CODE_02, CODE_03,
+   BSS_04, CODE_05 and CODE_06, and four further blocks belong to the
+   loader rather than to the file: EXEC at 0x00000004, dos_library at
+   0x003e5000, exec_library at 0x003e6000, and Custom at 0x00dff000,
+   which is the chip register block.
+
+   The import settings, including the language override that the
+   loader gets wrong, are CLAUDE.md rule 3.
+
+   What is known about which hunk is what:
+
+   o SEG0 is the main code hunk and holds all the strings, the startup,
+     the requirements check, the credits and the P61 replayer
+     references [verified].
+   o SEG2 and SEG5 are the two MEMF_CHIP hunks and carry NO
+     relocations. Chip RAM is what the blitter, the copper and Paula
+     can reach, so these are display or audio data rather than code
+     despite both being tagged HUNK_CODE [inferred]. 432 bytes is
+     copper-list or sprite sized; 149,288 bytes is bitplane sized.
+   o SEG3 and SEG6 hold 6,367 of the 6,605 relocations between them
+     and are the bulk of the image. Unexamined.
+   o SEG1 and SEG4 are BSS, so 31,376 bytes of zero-initialised state.
+     SEG4 at 29,576 bytes is where the per-effect working state most
+     likely lives [guess].
+
+4.  What the binary names about itself
+
+   Hunk 0 holds 724 printable runs of eight characters or more
+   [verified]. The ones that name a subsystem, with their SEG0-relative
+   offsets:
+
+   +--------------------------+---------------+-------------------------------+
+   | String                   | At            | What it tells us              |
+   +==========================+===============+===============================+
+   | P61_TimerInterrupt       | SEG0+0x002ad8 | the music is Player 6.1       |
+   +--------------------------+---------------+-------------------------------+
+   | ciab.resource            | SEG0+0x002ac9 | CIA-B timer drives the        |
+   |                          |               | replayer                      |
+   +--------------------------+---------------+-------------------------------+
+   | audio.device             | SEG0+0x002abc | Paula channels are claimed    |
+   |                          |               | properly, not stolen          |
+   +--------------------------+---------------+-------------------------------+
+   | dos.library              | SEG0+0x01825e | file I/O and ReadArgs         |
+   +--------------------------+---------------+-------------------------------+
+   | graphics.library         | SEG0+0x01826a | display setup                 |
+   +--------------------------+---------------+-------------------------------+
+   | relic.dat                | SEG0+0x01889f | the archive, opened by name   |
+   +--------------------------+---------------+-------------------------------+
+   | RelicChipMem             | SEG0+0x0188a9 | a named chip memory pool      |
+   +--------------------------+---------------+-------------------------------+
+   | RelicFastMem             | SEG0+0x0188b6 | a named fast memory pool      |
+   +--------------------------+---------------+-------------------------------+
+   | Relic Interrupt          | SEG0+0x0188c3 | an Interrupt node's ln_Name   |
+   +--------------------------+---------------+-------------------------------+
+   | r:p61.relic2             | SEG0+0x0188d3 | a module expected in ram:     |
+   +--------------------------+---------------+-------------------------------+
+   | SN=SNAPSHOT/S,HI=HIRES/S | SEG0+0x018960 | the ReadArgs template         |
+   +--------------------------+---------------+-------------------------------+
+   | Eeeek! Memory Imbalance! | SEG0+0x018875 | an alloc/free balance check   |
+   +--------------------------+---------------+-------------------------------+
+
+   Only three libraries and one device are opened, which bounds the OS
+   surface sharply: no intuition.library, no diskfont, no asl. This is
+   a program that takes over the machine and talks to the hardware
+   directly, using the OS only to load files and set up a display.
+
+   THE NAMED MEMORY POOLS AND THE IMBALANCE CHECK MEAN THERE IS AN
+   ALLOCATOR WRAPPER, not bare AllocMem calls. Finding it is the way
+   into how every effect gets its buffers, and the two pool names are
+   the xrefs that lead there.
+
+   The requirements screen at SEG0+0x018389 tests, and prints Passed
+   for, each of [verified]:
+
+    68020+              AGA chipset         PAL video display
+    1700 Kb CHIPmem     4000 Kb FASTmem     Relic.dat data file
+
+   The chip and fast figures are corroborated by the archive's own
+   totals - see formats/relic_dat.txt section 3.
+
+5.  Display and capture
+
+   All of this is from the readme and the demo's own strings
+   [verified]; none of it has been seen running.
+
+   o The normal display is "2x2 mode". A HIRES option runs it "in a
+     small window instead of the usual 2x2 mode".
+   o Snapshots are HAM8, written to ram: as snapshot00.ham8 upward, up
+     to 99 per run, taken with the right mouse button when the
+     SNAPSHOT argument was given.
+   o Snapshots are 640 x 98 pixels, and the readme asks that they be
+     scaled to 160 x 98 to display "in the correct aspect ratio".
+   o The 1x1 parts of the demo do not snapshot. So there are at least
+     two classes of part, 2x2 and 1x1, and only one of them is
+     capturable.
+   o The demo reports its own frame rate on exit: "The super fast
+     routines averaged 91 fps" at SEG0+0x018638.
+
+   HAM8 IS THE REASON TO TAKE THE SNAPSHOT PATH SERIOUSLY. It is a
+   per-pixel modify mode, not a palette mode, so a reconstruction
+   cannot be checked against a screen capture of unknown provenance -
+   but a snapshot the demo wrote itself is exactly the bytes its own
+   renderer produced.
+
+6.  Status
+
+   +--------------------------------+--------------------------------------+
+   | Thing                          | State                                |
+   +================================+======================================+
+   | the load file format           | read block by block [verified]       |
+   +--------------------------------+--------------------------------------+
+   | the Ghidra amiga loader        | bug diagnosed and patched            |
+   +--------------------------------+--------------------------------------+
+   | the Ghidra import              | done, as MC68020. 938 functions,     |
+   |                                | 1708 symbols                         |
+   +--------------------------------+--------------------------------------+
+   | relic.dat format               | read [verified]                      |
+   +--------------------------------+--------------------------------------+
+   | the chunk loader and splitter  | read and named [verified] -          |
+   |                                | formats/relic_dat.txt section 4      |
+   +--------------------------------+--------------------------------------+
+   | the 3D object format           | read [verified] -                    |
+   |                                | formats/geometry.txt                 |
+   +--------------------------------+--------------------------------------+
+   | the texture format             | read [verified] -                    |
+   |                                | formats/textures.txt                 |
+   +--------------------------------+--------------------------------------+
+   | the ship's geometry            | 21 objects parse and render; the     |
+   |                                | discs are the hull. Which objects    |
+   |                                | assemble into the ship, and how, is  |
+   |                                | not known                            |
+   +--------------------------------+--------------------------------------+
+   | the music subsystem            | identified only - subsystems/        |
+   |                                | music.txt                            |
+   +--------------------------------+--------------------------------------+
+   | the textured rasteriser        | read and named [verified] -          |
+   |                                | subsystems/renderer.txt              |
+   +--------------------------------+--------------------------------------+
+   | the framebuffer format         | 160 x 100 chunky 32-bit [verified]   |
+   +--------------------------------+--------------------------------------+
+   | chunky -> planar conversion    | read and named [verified] -          |
+   |                                | subsystems/display.txt               |
+   +--------------------------------+--------------------------------------+
+   | the copper lists               | static skeletons in CODE_05, pointer |
+   |                                | words patched at run time; the       |
+   |                                | builder and both patchers are read   |
+   +--------------------------------+--------------------------------------+
+   | the space scene display        | HAM8, 8 planes, 640x200; 640x98      |
+   |                                | super-hires with the HIRES switch    |
+   |                                | [verified from BPLCON0 and DIW]      |
+   +--------------------------------+--------------------------------------+
+   | the 0x310000 part display      | 320x128, 6 planes, 64 indexed        |
+   |                                | colours, KILLEHB [verified]          |
+   +--------------------------------+--------------------------------------+
+   | 160x100 framebuffer -> HAM8    | Ham8_EncodeFrame, read and named     |
+   |                                | [verified]                           |
+   +--------------------------------+--------------------------------------+
+   | geometry -> screen             | COMPLETE. transform, project, UV     |
+   |                                | generate, face dispatch, edge walk,  |
+   |                                | span fill, HAM8 encode, copper       |
+   +--------------------------------+--------------------------------------+
+   | texture coordinates            | GENERATED, not stored. Seven         |
+   |                                | procedural projections [verified] -  |
+   |                                | formats/geometry.txt section 4       |
+   +--------------------------------+--------------------------------------+
+   | the ship, assembled            | two objects, two textures, every     |
+   |                                | parameter read [verified] -          |
+   |                                | formats/geometry.txt section 6.      |
+   |                                | sim/run.py renders it                |
+   +--------------------------------+--------------------------------------+
+   | all seven UV projections       | transcribed in sim/texmap.py with a  |
+   |                                | self-test [verified]                 |
+   +--------------------------------+--------------------------------------+
+   | timing and frame rate          | 50 Hz PAL, one vblank per frame, no  |
+   |                                | 25 fps divider [verified] -          |
+   |                                | subsystems/timing.txt                |
+   +--------------------------------+--------------------------------------+
+   | every effect                   | untouched                            |
+   +--------------------------------+--------------------------------------+
+
+   THE CODE IS 97,820 BYTES OF THE 1,856,464-BYTE IMAGE [verified]:
+   CODE_00 holds 59 functions over 4,670 bytes, CODE_03 holds 407 over
+   64,182, CODE_06 holds 186 over 28,968, and CODE_02 and CODE_05 hold
+   no functions at all. So the two chip hunks are pure data, and even
+   the three code hunks are mostly data - CODE_00 is 99 per cent
+   tables and strings.
+
+   That ratio is the single most useful fact for planning work on this
+   binary. Following calls from the entry point reaches a few thousand
+   bytes of setup; finding a size table or a name string reaches the
+   assets directly. Every format decoded so far was found by the
+   second route.
+
+   The next things, in order:
+
+   1. Port Logo_DiffuseField and Logo_ShadeRefraction into src/ so
+      the logo shows the running screen rather than the seed art.
+      Both are read and plated; it is a transcription job, not a
+      reverse engineering one - parts.txt section 3.
+
+   2. Work out how scene one of maybe_Space_RunPlanetScenes gets
+      its 22 objects on screen. Space_DrawSunFrame has no
+      Scene_SortAndDrawAll, so g_SceneObjectCount is set and the
+      sorted list is never walked - FUN_002cd642, FUN_002cec14 and
+      FUN_002d1e08 are the candidates. Until that is answered the
+      split of 2.4 and 2.5 between the scene's two loops is a
+      guess, which is why the routine is still maybe_.
+
+   3. Work out which slot each of the 41 scene objects is, so the
+      g_SceneObjectCount steps can be tied to what appears at each
+      one. Spike_BuildRing's seven instances shift every slot index
+      after 15, and sim/ does not model slots at all yet.
+
+   4. Read the orb's close-up form - the branch g_OrbNearMode
+      selects at 0x002d2bac, which calls 0x002d1fdc and 0x002cdc3c.
+      That is where Fcrust is mapped onto it, and where the glow and
+      ray casting around it live.
+   5. Find which chunk feeds g_pFlatPattern and g_pFlatPalette, the
+      tables the translucent wedges blend through. No relic.dat
+      chunk is 32769 bytes, so they are sub-blocks of a larger one,
+      and until they are located the wedges cannot be coloured.
+
+   6. Read the 80-byte pattern that every HAM8 copper slice points
+      bitplanes 1 and 2 at. It supplies bits 0 and 1 of every HAM8
+      pixel, identically on all 200 scanlines, and it is the only
+      part of the displayed image that does not come from the frame
+      buffer.
+
+7.  Open questions
+
+   o THE PORT RUNS 1602 FIELDS SHORT OF THE DEMO'S 24500 when nothing
+     is playing, and is ahead of it at every cue. Seventeen of the
+     eighteen Music_PollCue sites are wired, so a continuous run with
+     the module should close that; the lengths serve as the fallbacks
+     and are what a silent host gets. UNMEASURED: no
+     full run with audio has been scored against the demo yet. The
+     replay tempo is not a factor - it matches the demo's to 0.09%
+     over ten thousand fields. reconstruction.txt 4.1.
+
+   o SCORE RAW AGAINST RAW, NEVER A PPM AGAINST A RAW. The demo's back
+     buffer is PRE-resolve and carries LIGHT in byte +2; relic_ppm's
+     .ppm output is POST-resolve, with LIGHT already blended into the
+     colour. Comparing one against the other compares across the HAM8
+     resolve and the number means nothing.
+
+     It is not a small error. It read as the port being FIFTEEN TIMES
+     too bright in the explosion scene where the honest figure is two,
+     and it produced a confident, wrong finding that the port's
+     background was two to four times too bright in the orb shots -
+     when resolving the demo's side first shows the port's background
+     is about HALF the demo's and the additive envelope lands close to
+     it (demo R 78.0 G 94.0 B 148.6 against the port's R 59.5 G 83.0
+     B 147.4 over the envelope's own pixels) [observed].
+
+     relic_ppm takes -raw and writes the pre-resolve frame.
+     tools/amiga/fbcmp.py now REFUSES a mixed pair rather than scoring
+     it, so this cannot recur silently.
+
+   o A 640 x 98 snapshot that should be displayed as 160 x 98 is a 4:1
+     horizontal squeeze, which no ordinary Amiga screen mode produces
+     directly. Whether the renderer works in 160-pixel-wide logical
+     space, or the snapshot writer expands something, is unresolved
+     and matters for every effect's inner loop.
+   o How many parts are there, and which are 2x2 and which 1x1? The
+     readme distinguishes them without counting them.
+   o Is there a part dispatcher - a table of routine pointers - or is
+     the demo a straight-line sequence of calls? The answer sets the
+     shape of every effect note. The relocations in SEG3 and SEG6 are
+     where a pointer table would show up.
+   o What is r:p61.relic2 and who writes it? It is not in relic.dat,
+     and nothing in the readme mentions a file in ram:.
+   o Which hunk holds the replayer? P61_TimerInterrupt is a string in
+     SEG0, which is not the same as the code being there.
+   o The demo claims 91 fps for "the super fast routines". Which parts
+     those are, and what the rest run at, is unknown.

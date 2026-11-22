@@ -1,0 +1,139 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                        TIMING AND FRAME RATE
+
+
+Abstract
+
+   RELIC synchronises to EVERY vertical blank, not every other one,
+   and it assumes PAL at 50 Hz. There is no frame divider anywhere in
+   the image, so the demo is not designed around 25 fps.
+
+   The sync is a floor rather than a lock: a frame that overruns its
+   field falls straight through the next wait, so the demo runs at
+   50 Hz where it can and free-runs below that where it cannot.
+
+   The demo's own "averaged 91 fps" message is static text. Nothing
+   computes it.
+
+Table of Contents
+
+   1. The interrupt server
+   2. The frame wait
+   3. PAL, stated by the demo
+   4. The 91 fps claim
+   5. What this means for a reconstruction
+   6. Open questions
+
+1.  The interrupt server
+
+   Vbl_Server at 0x0021f9b0 [verified]. It does five things:
+
+   +----------------------------+------------------------------------------+
+   | Action                     | Note                                     |
+   +============================+==========================================+
+   | jsr through g_pVblHook     | 0x002371ec, if a part installed one      |
+   +----------------------------+------------------------------------------+
+   | test 0xbfe001 bit 6        | the left mouse button; sets              |
+   |                            | g_QuitRequested and g_QuitRequested2     |
+   +----------------------------+------------------------------------------+
+   | g_VblTotal += 1            | 0x00237236, the run clock                |
+   +----------------------------+------------------------------------------+
+   | g_VblFlag += 1             | 0x00237218, a WORD, the frame sync       |
+   +----------------------------+------------------------------------------+
+   | g_VblCountGated += 1       | 0x002371e8, only while                   |
+   |                            | g_VblCountEnable (0x002371e4) is set     |
+   +----------------------------+------------------------------------------+
+
+   It returns D0 = 0, which tells exec to keep walking the server
+   chain - so this is an added interrupt server, not a stolen vector.
+   That is consistent with the demo opening audio.device and
+   ciab.resource properly rather than taking the hardware by force -
+   subsystems/music.txt.
+
+   NOTHING READS g_VblCountGated. It is incremented and never
+   consulted anywhere Ghidra can see, so whatever it was for did not
+   survive into the shipped build.
+
+2.  The frame wait
+
+   Frame_WaitVbl at 0x002d54f6, and five more identical copies, one
+   per part - Valley_WaitVbl 0x0031666a, FUN_0033bcb0, FUN_003720fa,
+   FUN_00313830, and the head of maybe_Part310_MainLoop.
+
+       clr.w   g_VblFlag
+     .wait
+       tst.w   g_VblFlag
+       beq     .wait
+
+   ONE VBLANK. There is no counter, no mask, no test for an even
+   field, and no second wait. The demo does not render on alternate
+   fields.
+
+   IT IS A FLOOR, NOT A LOCK, and this is the part worth being
+   precise about. Because the flag is CLEARED and then waited on,
+   a frame that took longer than one field arrives at the next call
+   with the flag already non-zero and does not wait at all. So:
+
+   o a part that fits in a field runs at exactly 50 fps
+   o a part that does not runs as fast as it can, and the picture
+     changes on a field boundary rather than mid-scan
+
+   That second case is what makes the demo "run like a dog on an
+   Amiga 1200/020" in the authors' own words - overview.txt section 1
+   - while still never tearing.
+
+3.  PAL, stated by the demo
+
+   Exit_PrintRunTime (0x0021f4b6) formats the "Demo exited after"
+   line, and the first thing it does is
+
+       move.l  g_VblTotal,D0
+       divsl.l #0x32,D0:D0      ; / 50
+       divs.w  #0x3c,D0         ; / 60
+
+   DIVIDING THE FIELD COUNT BY FIFTY TO GET SECONDS IS THE DEMO
+   STATING ITS OWN TIMEBASE [verified]. It is PAL. The requirements
+   screen also tests for a PAL display, and the copper lists set a
+   PAL-shaped display window - subsystems/display.txt.
+
+   On a 60 Hz machine the printed run time would be 20 per cent
+   short, which is the usual sign that nobody intended the demo to
+   run there.
+
+4.  The 91 fps claim
+
+   The exit text reads "The super fast routines averaged 91 fps" at
+   0x00237638. THE DIGITS ARE PART OF THE STRING [verified]: the
+   bytes are in the image, nothing references the address where they
+   sit, and no code writes into that line. Compare the line above it,
+   which contains a deliberate run of spaces that Exit_PrintRunTime
+   fills in a digit at a time.
+
+   So 91 is typed in, not measured. It cannot be a displayed frame
+   rate either, because PAL gives 50 fields a second - whatever the
+   authors meant by it, it is not a rate this demo ever put on a
+   screen.
+
+5.  What this means for a reconstruction
+
+   o Drive the demo at 50 Hz, not 25.
+   o Treat the frame budget as 20 ms, and expect parts to miss it.
+   o Timing that matters - a camera path, a fade, music sync - should
+     be driven off a field counter equivalent to g_VblTotal, not off
+     wall-clock seconds, or it will drift against anything derived
+     from the original.
+
+6.  Open questions
+
+   o What installs g_pVblHook, and what do the parts put there? The
+     per-part hook is where any copper-list swap or audio service
+     would live.
+   o What was g_VblCountGated for?
+   o Does any part skip Frame_WaitVbl entirely? All six copies found
+     so far wait once.
+   o Is there a CIA timer in use as well as the vertical blank? The
+     music replayer takes ciab.resource (subsystems/music.txt), so a
+     second timebase exists; whether anything visual uses it is
+     unread.

@@ -1,0 +1,214 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                         THE TEXTURE FORMAT
+
+
+Abstract
+
+   RELIC's textures are stored CHUNKY, four bytes per texel, as three
+   six-bit colour channels and one byte that is always zero. There is
+   no palette and no bitplane encoding anywhere in the texture data
+   [verified].
+
+   Fshiptextures carries four textures of the main spaceship; two of
+   them render as the circular hull faces at 256 pixels wide, with the
+   blue arc segments, magenta inner rings and grey panelling the demo
+   shows.
+
+   The same four-byte texel is used by Fcrust, Fplasma and Fearth, so
+   it is the project's texture format rather than one part's.
+
+Table of Contents
+
+   1. The texel
+   2. Why it is shaped that way
+   3. Fshiptextures
+   4. Other chunks using the same texel
+   5. Viewing it
+   6. Open questions
+
+1.  The texel
+
+   Four bytes, no header, no palette, row-major.
+
+   +--------+------+------------+---------------------------------------+
+   | Offset | Size | Confidence | Notes                                 |
+   +========+======+============+=======================================+
+   | +0x00  |    1 | verified   | red,   0x00..0x3f                     |
+   +--------+------+------------+---------------------------------------+
+   | +0x01  |    1 | verified   | green, 0x00..0x3f                     |
+   +--------+------+------------+---------------------------------------+
+   | +0x02  |    1 | verified   | zero in every TEXEL; a real channel   |
+   |        |      |            | in the framebuffer - see below        |
+   +--------+------+------------+---------------------------------------+
+   | +0x03  |    1 | verified   | blue,  0x00..0x3f                     |
+   +--------+------+------------+---------------------------------------+
+
+   The range is the measurement that matters: across all 196,608
+   texels of Fshiptextures, bytes 0, 1 and 3 take exactly 64 distinct
+   values each and byte 2 takes exactly one. The same holds for
+   Fcrust, Fplasma and Fearth.
+
+   SIX BITS PER CHANNEL, NOT EIGHT. To display a texel, scale each
+   channel to 8 bits; replicating the top two bits - (v << 2) | (v >> 4)
+   - maps 0x3f to 0xff and keeps black at black.
+
+   THE RENDERER AGREES, INDEPENDENTLY. Rast_FillSpansTextured scales
+   its texture index by four in the addressing mode and copies a texel
+   to the framebuffer with a single move.l and no conversion, so four
+   bytes per texel is read off the consumer as well as off the data -
+   subsystems/renderer.txt section 3. The framebuffer holds the same
+   four bytes, which is why no sampler-side conversion exists.
+
+   THE ZERO BYTE IS AT +2, BETWEEN GREEN AND BLUE, NOT AT +0. So a
+   texel read as a big-endian longword is 0xRRGG00BB, which is NOT the
+   0RGB longword an Amiga palette register takes. Reading it as 0RGB
+   silently shifts every channel one position and produces an image
+   that still looks like an image - wrong colours, right shapes - so
+   this is a mistake that survives a glance at the output.
+
+   BYTE +2 IS NOT A PAD, IT IS AN UNUSED CHANNEL. It is zero in every
+   texel of every asset chunk, which is a fact about the ART, not
+   about the format. The framebuffer shares this exact layout and
+   Draw_LineAA (0x002ca848) writes byte +2 and nothing else - 0x3f
+   along the line and +0xf on the pixel either side, which is
+   antialiasing coverage. All three windows of the HAM8 encode
+   overlap it. So a reconstruction must carry four channels, not
+   three, even though no texture ever sets the fourth.
+   See subsystems/display.txt section 8.
+
+2.  Why it is shaped that way
+
+   [inferred]. THE RENDERER DOES NOT EXPLAIN THE PAD BYTE:
+   Rast_FillSpansTextured copies a texel whole and never touches byte
+   2. So the reasoning below says why a coder WOULD choose this
+   layout, not why this one did - the routine that would
+   prove it, something that adds or averages two texels, has not been
+   found. Five unexamined variants of the fetch exist in
+   Rast_TexturedPoly and are the place to look.
+
+   Six-bit channels in eight-bit lanes leave two bits of headroom per
+   channel, so several texels can be added or averaged with ONE 32-bit
+   add without a channel carrying into its neighbour. That is the
+   standard reason to waste a quarter of the storage on a 68020, and
+   it is what makes bilinear filtering, mip blending or additive
+   lighting cheap. Four texels can be summed before any channel can
+   overflow.
+
+   It also explains the pad byte's position. With the layout
+   0xRRGG00BB, a single move.l fetches all three channels, and a swap
+   puts blue in the low word by itself where it can be scaled without
+   touching red or green.
+
+   The headroom argument is the strong half of this and the pad
+   position is the weak half: two bits of slack per channel is a real,
+   measurable property, while "the pad makes blue separable by swap"
+   is a story that fits the bytes and nothing more.
+
+3.  Fshiptextures
+
+   786,432 bytes, split by Space_LoadShipTextures (0x002ced9c) through
+   a four-entry size table at g_ShipTexSizes (0x002e495c) [verified].
+
+   THE SIZES ARE NOT AT g_ShipTexSlots (0x002e4948). That address is
+   Dat_LoadSplit's DESCRIPTOR - [count, slot0..slot3] - and the slots
+   are filled at load time, so it reads 4, 0, 0, 0, 0 out of the
+   image. A1 is the descriptor and A2 the sizes, the same pair
+   Mem_AllocSubBlocks takes, and mistaking one for the other yields a
+   plausible-looking 4 followed by zeros.
+
+
+    sub  offset     bytes    texels   dimensions
+    ---  --------   -------  -------  ----------------------------
+      0  0x000000   262144    65536   256 x 256 [verified]
+      1  0x040000   262144    65536   256 x 256 [verified]
+      2  0x080000   131072    32768   256 x 128 or 128 x 256 [open]
+      3  0x0a0000   131072    32768   256 x 128 or 128 x 256 [open]
+
+   THE 256 x 256 FOR SUBS 0 AND 1 COMES OUT OF THE CODE, not off a
+   render that looked right. The texel index is built as
+   (v & 0xff00) | (u & 0x00ff), which is v*256 + u by construction, so
+   a texture addressed by that loop is 256 wide and at most 256 tall -
+   subsystems/renderer.txt section 3.
+
+   That also sharpens the question about subs 2 and 3. A 32,768-texel
+   image cannot be addressed by the same loop as a 256 x 256 one
+   without wasting half the index space, so either they are reached by
+   one of the five unexamined fetch variants, or they are 256 x 128
+   and the code simply never drives v past 127.
+
+   The sizes sum to 786,432, the whole chunk.
+
+   Textures 0 and 1 are the ship's circular hull faces. Rendered at
+   256 wide they show a dark grey panelled disc with bright cyan
+   dashed arc segments, magenta and pink concentric inner rings, and
+   teal triangular panels - the colours the demo shows on the ship.
+   That they resolve into a coherent centred circular image at 256
+   wide is what fixes both the width and the channel order.
+
+SUBS 2 AND 3 ARE 256 x 128, AND THEY ARE CONTIGUOUS [verified].
+   The sampler builds its index as (v & 0xff00) | (u & 0x00ff), so v
+   is masked to eight bits whatever the real height - every texture
+   is addressed as 256 x 256. Sampling from sub 2's base with v past
+   127 therefore runs straight on into sub 3, and the two are one
+   256 x 256 region reached through two entry points.
+
+   Nothing oversteps in practice. The parts that use them are the
+   ship's tower sections, mapped with the cylinder projections, and
+   their v comes out in 0..128 - formats/geometry.txt section 6.
+
+   THE TEXTURES ARE CIRCULAR IMAGES, WHICH IS A FINDING ABOUT THE
+   MAPPING, not just about the art. A texture drawn as a disc centred
+   in its square is what a planar or polar projection onto disc
+   geometry consumes. See formats/geometry.txt section 4, which
+   records that the geometry carries no texture coordinates at all.
+
+4.  Other chunks using the same texel
+
+    chunk     bytes     texels   renders as
+    --------  --------  -------  ---------------------------------------
+    Fcrust     262144    65536   256 x 256 seamless cracked stone, blue
+                                 and purple [verified by render]
+    Fplasma    262144    65536   256 x 256 [not yet rendered to a view]
+    Fearth      88320    22080   width NOT found - see open questions
+
+   Fcrust at 256 wide is a clean, seamless, tiling stone texture, so
+   the 256 x 256 reading is right for it too.
+
+   FEARTH DOES NOT RESOLVE. 22,080 texels factor as 160x138, 184x120,
+   240x92, 276x80 and 320x69, and every one of those tried so far
+   renders as horizontal banding over blue and orange content rather
+   than a coherent image. Either the width is none of them, the chunk
+   is not a plain texture, or it is several smaller images
+   concatenated. Its split table has not been found, and finding it is
+   the way to settle this rather than trying more widths.
+
+5.  Viewing it
+
+    py -3.10 sim/run.py --tex                   the viewer, texture page
+    py -3.10 tools/dat/chunkimg.py rgb6 Fcrust 256 OUT.png
+
+   chunkimg.py names its interpretation on the command line so that a
+   render can never be mistaken for a decoded format. A picture that
+   looks like an image is evidence worth following; it is not proof of
+   the layout, and for Fearth it is currently proof of nothing.
+
+6.  Open questions
+
+   o Does anything sample sub 3 with v past 127? That would run off
+     the end of the chunk entirely. Nothing found so far does.
+   o What width is Fearth, and is it even a single image?
+   o The channel ORDER still rests on the rendered image looking
+     right rather than on an instruction. The renderer copies a texel
+     whole without inspecting channels, so it cannot settle which of
+     bytes 0, 1 and 3 is red. Only the display conversion can, and
+     that has not been found - subsystems/renderer.txt section 5.
+   o Is there a mip chain? Nothing in the split tables looks like one,
+     and the span filler has no texture-size switch in it, yet the
+     demo visibly drops resolution as the camera pulls away from the
+     ship. So whatever reduces detail is somewhere else - plausibly
+     the display conversion rather than the sampler.
+   o Where are the palettes? Nothing needs one at four bytes a texel,
+     but Dat_LoadSplit call sites hand several parts a 1024-byte
+     sub-block, which is the size of 256 longwords.

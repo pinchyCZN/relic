@@ -1,0 +1,1032 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                    THE ORB FORMATION AND ITS LIGHTNING
+
+
+Abstract
+
+   Part 2.10. The camera circles the ship while six lightning beams
+   charge an orb held in the claws. This note covers the beams: how a
+   beam is aimed, how it grows, and the three glow stages that make it
+   read as a flow rather than a switch. The scene's phase script and
+   its camera path are in parts.txt 3.2, and the cut that follows it is
+   effects/orb_underside.txt.
+
+Table of Contents
+
+   1. The Six Beams
+   2. The Three Stages
+      2.1. The Travelling Head
+      2.2. The Trail
+      2.3. The Struck Bolt
+   3. The Turbulence
+   4. The Attach Points
+   5. The Polar Table Is A Closed Form
+   6. The Orb Before It Forms
+   7. One Sort Over Everything
+      7.1. Why A Claw Is Keyed From Its Unbent Pose
+   8. The Claws Change Texture
+   9. The Shell Around Each Arc
+   10. Measuring A Glow
+   11. The Centre Flare, Its Ghosts, And The Horizon Band
+      11.1. What Orb_DrawCentreFlare does
+      11.2. The band is the flare's, not a horizon
+      11.3. Confirmed against the hardware
+      11.4. What the orb's use needs beyond the hull's
+      11.5. The pulse counter, and why a single frame cannot judge it
+      11.5. The pulse counter, and why a single frame cannot judge it
+   12. Open questions
+
+1.  The Six Beams
+
+   Six two-vertex blocks in the executable, 28 bytes each, back to
+   back from g_BeamGeomHullToSpike [verified]. Each is a longword
+   nverts-1 then two twelve-byte vertices, in the scene's own
+   (horizontal, depth, vertical) order:
+
+   +---+--------------------------+--------------------------+
+   | # | from                     | to                       |
+   +===+==========================+==========================+
+   | 0 | (0, 66560, -43520)       | (0, 43520, 30720)        |
+   | 1 | (57600, -33280, -43520)  | (37632, -21760, 30720)   |
+   | 2 | (-57600, -33280, -43520) | (-37632, -21760, 30720)  |
+   | 3 | (0, 43520, 30720)        | (0, 0, 51200)            |
+   | 4 | (37632, -21760, 30720)   | (0, 0, 51200)            |
+   | 5 | (-37632, -21760, 30720)  | (0, 0, 51200)            |
+   +---+--------------------------+--------------------------+
+
+   The first three leave the saucer's rim - vertical -43520, on a
+   radius of 66560 at 0, 120 and 240 degrees - and land on the small
+   disc's three spikes at vertical 30720. The second three run from
+   those same three points to one place at (0, 0, 51200), which is
+   where the orb forms in the claw. THE SECOND GROUP'S START POINTS
+   ARE THE FIRST GROUP'S ENDPOINTS EXACTLY, so the charge visibly
+   hands off rather than starting again.
+
+   A beam is a scene object of type 2 - the type word is at the
+   slot's +0x2c - and Scene_SortAndDrawAll projects its two vertices
+   through Scene_TransformProject like any hull vertex, rejecting one
+   that will not project by writing 0x7fffffff [verified,
+   0x002d29b6]. Each slot's +0x34 points at the longword holding that
+   beam's strength: g_BeamPhaseA for the first three, g_BeamPhaseB
+   for the second three.
+
+   THE PROJECTION IS IN WHOLE PIXELS, not a fixed point fraction. The
+   divide is by comp1 plus 500 and the screen centres added after it
+   are 0x50 and 0x32 - 80 and 50, the middle of the 160x100 frame
+   [verified, 0x002d2a18].
+
+2.  The Three Stages
+
+   Beam_Draw tests the strength against 0x20 and does one of two
+   things, but it draws the trail before it looks at all [verified,
+   0x002ca800]. So the stages overlap:
+
+       strength        what is drawn
+       below 0x10      the trail alone, so an ungrown beam is dark
+       0x10 to 0x1f    the trail and a travelling head
+       0x20 and over   the trail and a struck bolt
+
+   g_BeamPhaseA is seeded -0x32 and climbs one a tick, so the first
+   three beams stay dark for 50 ticks, grow over the next 16, and
+   strike on the 67th. g_BeamPhaseB is seeded 0 when its phase
+   starts. NEITHER IS CLAMPED - 0x20 is only the threshold tested
+   here, and the counters climb past it; the demo reads 88 and 34
+   where both are long since struck [observed, frame 348].
+
+   ONE PER VERTICAL BLANK, NOT ONE PER DRAWN FRAME. Anim_SceneTick
+   adds one to both strengths every tick [verified, 0x002d5f14], and
+   the demo renders every second tick - so the head crosses in 16
+   blanks, 0.32 s of a PAL frame, moving two sixteenths between the
+   frames that are actually shown. Checked live: g_BeamPhaseA read 1
+   at frame 261 and 24 at frame 284, exactly 23 over 23 [observed,
+   on hardware]. A reconstruction that steps state at 50 Hz and draws
+   every one of those steps gets the same duration and a smoother
+   head, which is the intended enhancement and not a speed change.
+
+2.1.  The Travelling Head
+
+   Beam_DrawGrowing walks a point from the beam's origin out to
+   (strength - 0x10)/16 of the way along, and draws ONE BIG GLOW
+   there - radius 0x1e plus a random ten, so thirty to forty pixels
+   on a hundred-row frame [verified, 0x002ca9a0]. There is no line
+   behind it and nothing joins the two ends.
+
+   THAT IS WHY A BEAM DOES NOT SWITCH ON. A glow head runs out along
+   where the bolt will be, and only when it arrives does the
+   lightning appear.
+
+   The glow is Draw_FlareTurbulent, NOT Draw_GlowBlob - section 3.
+
+2.2.  The Trail
+
+   The head seeds a particle at its own position with its own radius
+   every tick, so the trail is as wide as the head. Particle_Spawn
+   takes the first free of 51 eight-byte slots at the object's +0x48
+   and writes {life 0xa, x, y, size}; Particle_UpdateAndDraw walks 50
+   of them, subtracts two from each life and draws it with
+   Draw_GlowBlob and g_RampSpark [verified].
+
+   So five are alive at once and they fade over five ticks. Because
+   Beam_Draw runs the trail unconditionally, the sparks the head shed
+   on its way out are still fading after the bolt has landed.
+
+2.3.  The Struck Bolt
+
+   Beam_BuildBoltPath lays down eight nodes between the two ends and
+   Beam_Draw joins them with nine Draw_LineAA segments - eight to the
+   nodes and one more to the real endpoint, because the eighth node
+   stops short of it [verified, 0x002ca800].
+
+   THERE IS NO RANDOM NUMBER IN THE BOLT'S SHAPE. Two sine lookups
+   displace each node, one walking the table at half the rate of the
+   march along the line and one at an eighth, so they never come back
+   into step and the result reads as irregular rather than as a wave.
+   Both are scaled by the line's own pixel length, so a bolt keeps
+   its shape at any distance instead of flattening. g_BoltSeed and
+   g_BoltPhase advance two and 200 a tick, which is all the motion
+   there is.
+
+   Each node also gets a Draw_GlowBlob whose radius falls out of
+   (0x10000 - d/2) scaled by the line length, with four as the floor
+   [verified, 0x002ca9e4]. FOR EVERY BEAM IN THIS SCENE THE FLOOR
+   WINS: the formula only exceeds four for a line over about 130
+   pixels, and none of the six is that long on screen.
+
+   AND AT FOUR THE HALO IS INVISIBLE. The polar table's distance
+   starts at 3 rather than 0 (section 5), so a radius-4 blob reads
+   g_BlobFalloff[4 << 8 | 3] = 192 at its centre and 255 one pixel
+   out. Through the bolt's linear ramp that is 0x1f under a line
+   which has already written 0x3f, and nothing at all beyond. So a
+   STRUCK BOLT IS A BARE THREE-PIXEL ANTIALIASED LINE and all of the
+   effect's width comes from the trail and the head. A reconstruction
+   that draws visible halos there is drawing something the demo does
+   not.
+
+3.  The Turbulence
+
+   Draw_FlareTurbulent is the head's glow and is a different routine
+   from Draw_GlowBlob [verified, 0x002d466c]. The circle is the same
+   - the span half width out of g_pSpanHalfWidth, the falloff out of
+   g_BlobFalloff[radius << 8 | dist] - but the ramp index carries two
+   more reads:
+
+       i  = g_BlobFalloff[radius << 8 | dist]
+       i += (*g_pTurbulenceA)[dist]
+       i += (*g_pTurbulenceB)[dist + (angle >> 2)]
+       LIGHT += g_RampBeamHead[i]
+
+   Turbulence_BuildTable builds the one table both cursors read: 1024
+   words of a random term four times as wide as either sine, added to
+   two sine walks taken at different rates and shifted down ten
+   [verified, 0x002cc4bc]. Structure at two scales with grain on top.
+
+   ONLY 512 WORDS ARE EVER A CURSOR and the table is twice that long.
+   A read reaches dist + angle/4 words past the cursor, up to 318, so
+   the second half is the overrun a wrap would otherwise fold.
+   Nothing masks the read index.
+
+   Anim_SceneTick walks the two cursors OPPOSITE WAYS AND AT
+   DIFFERENT SPEEDS - B back two words, A forward one - so one table
+   read twice never repeats its pairing until both wrap [verified,
+   0x002d5f28]. That is the whole of the churn.
+
+   TWO THINGS ABOUT THE ADD. It goes into byte +2, the LIGHT
+   accumulator, and leaves R, G and B exactly as they were. And it is
+   a plain byte add, NOT taken through g_LightSatLut the way
+   Draw_GlowBlob's is - so the head alone can push LIGHT past 0x3f
+   and Ham8_BuildTables has the levels to show it. The demo reads
+   0x4b where a saturating draw would sit flat at 0x3f [observed,
+   on hardware at frame 285].
+
+   The ramp is indexed by a SIGNED word and the turbulence walks off
+   both of its ends on purpose. Read live around g_RampBeamHead: the
+   128 bytes below hold 0x3f, its own plateau value, so turbulence
+   toward the centre cannot overbrighten; the 256 above hold zero, so
+   turbulence at the rim cuts the glow off hard.
+
+4.  The Attach Points
+
+   Seven places a beam ends, twelve bytes each at g_BeamAttachPoints,
+   the array running right up to the beam geometry [verified]: the
+   three saucer-rim points, the three spikes, and the one in the claw
+   where the orb forms. They are the beams' own endpoints, so nothing
+   has to be kept in step.
+
+   SIX OF THEM GET A PULSING FLARE and that is what phase 3 adds.
+   Space_BuildObjects gives each a TYPE 1 scene slot - 25 to 27 the
+   rim, 31 to 33 the spikes, with three meshes in the slots between -
+   and phase 3 reveals all nine the tick after the first group
+   strikes. So the attach points light up WITH the strike rather than
+   easing in. The claw point waits for the second group.
+
+   Scene_SortAndDrawAll's type 1 branch draws one [verified,
+   0x002d29ea]:
+
+       radius = table[g_FlareSizeStep++ & 7] * 2048 / depth
+
+   clamped to 0x7f, through Draw_Flare with g_pRaySpikes and
+   g_ColRampAmber - so it is a coloured flare WITH rays, added to all
+   four channels, not a light-only glow like the rest of the beam.
+   Being divided by the projection's own depth, it shrinks with
+   distance.
+
+   THE PULSE IS A TABLE, NOT A WAVEFORM, and the rim and the spikes
+   are given different ones:
+
+       rim     240 320 160 120 160 112 400 160
+       spike   176 160 208 160 176 208 144 192
+
+   g_FlareSizeStep advances once per flare DRAWN and the index is
+   masked to 7. With six live the pattern rotates by six a frame, so
+   no two neighbours flicker together and none of them repeats on a
+   short cycle.
+
+5.  The Polar Table Is A Closed Form
+
+   g_PolarTable's two bytes are, for every one of its 65536 entries
+   [verified, checked entry by entry against the image]:
+
+       low  byte = isqrt(dx*dx + dy*dy) + 3, clamped to 255
+       high byte = atan2(dy, dx) * 128 / pi, to within one
+
+   THE +3 IS A FLOOR, not an offset to undo. dist(0, 0) is 3, so
+   g_BlobFalloff[r << 8 | 3] is the brightest a blob's centre ever
+   gets, and at small radii that is most of the way down the ramp -
+   which is why the bolt's node halos do not show (section 2.3).
+
+   BEING CLOSED FORM IS WHAT LETS THE RECONSTRUCTION SCALE. Indexed
+   in whole demo units the falloff steps once every `scale` pixels
+   and a blob comes out as a staircase of square blocks. Computing
+   the same function with four fraction bits and interpolating
+   g_BlobFalloff between its entries removes that, and it is
+   resampling the demo's own data rather than inventing a smoother
+   curve - reconstruction.txt 2. Scale 1 discards the fraction and is
+   the table lookup exactly, byte for byte over 301 frames.
+
+6.  The Orb Before It Forms
+
+   The claw attach point is not given a flare like the other six: it
+   is given a TYPE 3 slot, which is the orb, and Space_BuildObjects
+   builds it immediately after the second beam group [verified,
+   0x002d11f0]. It is the last slot of all, so PHASE 6 reveals it -
+   measured at frame 352, tick 343 [observed, on hardware].
+
+   While g_OrbNearMode is zero the type 3 branch draws the orb as TEN
+   GLOW BLOBS ON A SPHERE about that point [verified, 0x002d2b3c]:
+
+       p = (0x2800, 0, 0) rotated by (A + i*0x333, B + i*0x514)
+       drawn at the claw point + p, size 0x1e, with g_RampBolt
+
+   The two base angles are g_OrbSpinA and g_OrbSpinB, which
+   Anim_SceneTick advances 0x64 and 0xa a tick right beside the beam
+   strengths [verified, 0x002d5f00] - so the satellites turn on the
+   same clock as everything else in the scene. BECAUSE EACH SATELLITE
+   TAKES ITS OWN PAIR OF ANGLES, and the two steps are coprime with
+   neither period, they do not sit on a ring: they scatter over the
+   sphere and the pattern never repeats within the scene.
+
+   Then Orb_DrawCentreFlare puts THE BIG PULSING LIGHT at the centre.
+   It is the attach points' effect exactly - the same
+   g_FlareSizeStep counter masked to 7, the same g_pRaySpikes and
+   g_ColRampAmber - with its own and much larger table:
+
+       orb     400 480 320 440 360 400 480 360
+
+   against the rim's 240..400 and the spikes' 144..208. So the claw
+   holds the brightest pulse in the scene, beating in step with the
+   six on the arcs.
+
+   THE RADIUS IS PERSPECTIVE, not a constant. Scene_ProjectSized
+   scales the size by the same depth it divided the position by -
+   (size << 11) / depth, clamped at 0x7f - which is how every type 1
+   and type 3 glow in the scene is sized [verified, 0x002d2cb2].
+
+7.  One Sort Over Everything
+
+   Scene_SortAndDrawAll keys EVERY live slot and sorts the lot
+   together [verified, 0x002d28ca]: the hull parts, the beams, the
+   attach flares and the orb. The key is the slot's own centroid taken
+   through the object angle and both camera angles, keeping only the
+   depth, and it is NOT translated by the camera.
+
+   THAT IS WHY THE ORB LOOKS HELD INSIDE THE CLAWS. There is no depth
+   buffer, so order is everything: a claw part nearer than the claw
+   centre paints over the glow behind it, and the orb reads as being
+   inside the cage and showing between its arms. Drawing the glow
+   after the ship instead puts all of it on top, and the orb then
+   looks painted onto the front of the claws - which is the single
+   most visible difference the ordering makes.
+
+   A beam's centroid is the MEAN of its vertices, Obj_SetCentroid
+   writing it [verified, 0x002cfeba]; a flare's and the orb's are the
+   point itself, Space_BuildObjects writing those straight into the
+   slot without calling it.
+
+   SO THE INTERLEAVING IS PER OBJECT AND COSTS NOTHING. There is no
+   per-triangle sorting anywhere, and none is needed: a claw is its own
+   object and a beam is its own object, so one key each is enough to
+   put a near claw over a far beam. What it CANNOT do is split one
+   object across another - a beam that runs from outside the cage to
+   its centre is wholly in front of a given claw or wholly behind it.
+   At 160 by 100, with claw arms a few pixels wide, that is not
+   visible.
+
+7.1.  Why A Claw Is Keyed From Its Unbent Pose
+
+   A claw is centroided ONCE, by Mesh_InstanceAtAngle when
+   Space_BuildObjects instances it, from the UNBENT arm at its hub
+   angle - and Strut_SetClawPose re-poses all six every tick and never
+   centroids again [verified, 0x002cffea]. The key is therefore the
+   extended arm's and does not follow the claws as they open.
+
+   THAT IS WHAT MAKES THE LOWER ARCS LAYER. The six centroids sit on a
+   circle of radius 16912 at c2 38059, sixty degrees apart [observed,
+   on hardware], and their keys spread about 1700 -
+   wide enough for a beam's key to fall between them.
+
+   TAKING IT OFF THE POSED ARM INSTEAD IS THE TRAP. Closed, the six
+   collapse to within 2230 of the hub axis, their keys land within 219
+   of each other, the sort cannot separate them, and every claw paints
+   over every beam - the three lower arcs vanish behind the whole cage
+   while the upper three, whose keys are far outside that band, are
+   unaffected. The symptom is one arc looking right and two looking
+   wrong, which reads as a beam problem and is a centroid one.
+
+8.  The Claws Change Texture
+
+   Strut_RetextureToTex3 re-runs the UV generation for all six claws
+   with pass {mode 1, scale 0x96, 0xc0 by 0x40} off the REST pose, the
+   slot's +0x4 pointed at +0x8 for the duration and put back after
+   [verified, 0x002cf550].
+
+   EVERY ONE OF THOSE IS WHAT THE CLAWS ALREADY HAD. Same pass word,
+   same scale, same extents, same rest-pose source. THE ONLY THING
+   THAT DIFFERS IS THE TEXTURE - g_ShipTexSlots[3] in place of [2] -
+   so nothing blends and nothing eases: one tick has the old texture
+   and the next has the new.
+
+   IT HAPPENS AT THE PHASE 5 TO 6 BOUNDARY [verified, 0x002cc7e0], the
+   same tick g_SceneObjectCount goes to 38 and the orb appears. The
+   claws change colour exactly as the orb arrives, which is why the
+   two read as one event.
+
+   g_ShipTexSlots is [count, slot0..slot3] - the first longword is the
+   count, 4, and NOT a slot - and the sub-blocks are 0x40000, 0x40000,
+   0x20000 and 0x20000 of Fshiptextures, so [3] is the chunk's last
+   0x20000 at offset 0xa0000 [verified].
+
+9.  The Shell Around Each Arc
+
+   THE THREE MESHES PHASE 3 ADDS ARE SHELLS AROUND THE THREE ARCS -
+   a faint blue transparent skin, spiked along the same path the arc
+   takes, that the lightning wriggles inside. They are Fspacedata
+   objects 5, 6 and 7, built from slot triples 15/16/17, 18/19/20 and
+   21/22/23 [verified, 0x002d1010 onward].
+
+   WHAT MAKES THEM TRANSPARENT IS A REWRITTEN MODE WORD.
+   Mesh_MakeAdditiveEnvelope - which an earlier pass named
+   Uv_WriteFlatTable - stores 1 into every face of each of the three
+   and copies a 24-byte record into the slot's UV buffer [verified,
+   0x002d155c]. Mode 1 is Rast_AdditivePoly, so these three objects
+   are the only additive geometry in the scene; everything else is
+   mode 2 and textured. formats/geometry.txt 3.1.
+
+   The 24 bytes are six longwords, (127, 0, 0, 0, 64, 127), which
+   Poly_DrawFaceList loads into A0..A5 as three pattern-space (u, v)
+   pairs - (127,0), (0,0), (64,127) - THE SAME FOR EVERY FACE.
+
+   Rast_AdditivePoly interpolates that coordinate across the triangle
+   and per pixel [verified, 0x002cb3aa]:
+
+       i  = g_pFlatPattern[(uv + g_FlatScroll)          & 0x7fff]
+       i += g_pFlatPattern[(uv + 2 * g_FlatScroll) + 0x7f & 0x7fff]
+       *(u32 *)pixel += g_pFlatPalette[i]
+
+   TWO TAPS OF ONE PATTERN, 0x7f and a scroll apart, summed into a
+   256-entry palette of whole four-byte pixels which is then ADDED. So
+   it adds to R, G, LIGHT and B together - the only thing in the scene
+   that does; every glow here touches byte +2 alone.
+
+   AND THE SHELL FLOWS BECAUSE THE PATTERN SCROLLS. g_FlatScroll is
+   0x002e0afc and anim mode 0x12 takes 0x100 off it a tick [verified,
+   0x002d6008]. MODE 0x13 TAKES THE SAME 0x100 OFF IT - measured
+   0x8200 then 0x8000 two frames apart [observed, on hardware] - so
+   the envelope flows in BOTH shots. MODE 6 IS THE ONE THAT DOES NOT
+   TOUCH IT: hardware reads 0x5900 and still 0x5900 four frames
+   later, so the value is static for the whole of phase 1 and where in
+   phase 1 a reading is taken does not matter.
+
+   That makes 0x5900 the seed for the whole of 2.10, and stepping it
+   over phase 2 to 6's 280 ticks lands on 0x4100 - within two ticks of
+   the 0x3f00 measured independently for 2.11, so the scroll runs
+   continuously across the cut.
+
+   BOTH TAPS MOVE, AND BY DIFFERENT AMOUNTS: the first is at
+   (uv + scroll) and the second a further scroll beyond it, so two
+   sampling points slide through the 32768-byte table at different
+   rates. That is what makes the surface flow rather than sit, and it
+   is finer than the HAM8 result can show.
+
+   g_pFlatPattern is Fspacedata slot 65 at 32768 bytes and
+   g_pFlatPalette slot 66 at 1024 - 256 four-byte pixels. THE PALETTE
+   IS A BLUE RAMP WITH R ALWAYS ZERO [verified], which is the glass
+   look: its low entries are nearly black with a little blue, and it
+   climbs to G 0xc6, LIGHT 0xc7, B 0xfe at the top.
+
+   EACH SHELL IS THREE FACES AND FOUR VERTICES [verified] - a thin
+   spike laid along its arc, not a tube.
+
+   THE ACCUMULATOR PACKING. The original carries its two coordinates
+   across two registers so one add steps both [verified, 0x002cb622]:
+   D7's low word holds v as 8.8 and its high word u's fraction, D2's
+   low word holds u's integer, and addx.w adds u's step plus the carry
+   out of the v add. The index takes its high byte from D7's low word
+   - bits 8 to 15 of v, so v's integer - and its low byte from D2:
+
+       index = ((v_int & 0xff) << 8 | (u_int & 0xff)) & 0x7fff
+
+   so v's bit 7 falls off in the mask, which is what makes the pattern
+   128 rows of 256 rather than 256 of 256.
+
+   AND THE GRADIENTS ARE WHOLE-UNIT, which the reciprocal table
+   settles: g_pRecip holds 0x8000 / n [verified - 1638 times 20 and
+   1560 times 21 are both 32760]. After the multiply, the doubling and
+   the swap, dudx is du / width in whole units; dvdx takes asr #7
+   instead and is dv * 256 / width in 8.8. One affine pair per
+   triangle, computed at the knee, not per span.
+
+   src/rast.c's Rast_AddTri carries the whole of that shading path:
+   the geometry, both sub-blocks, the coordinate template, the two
+   taps, the scroll, the wrapping byte sum, the palette and these
+   gradients.
+
+   THE DRAW ORDER IS NOT THE PROBLEM, which took measuring both sides
+   to establish. The demo's three shells are slots 29, 30 and 31 and
+   they sort INTERLEAVED THROUGH THE HULL - keys 2885, 1604 and -313
+   against a hull spanning 8591 down past -313 - so hull parts drawn
+   after them paint over them [observed, on hardware, read out of
+   the sort list at g_SceneSortList]. Ours do the same: keys
+   1603, 1600 and 1589 at positions 5, 6 and 7 of the list, with more
+   than twenty hull parts drawn afterwards.
+
+   READING THAT LIST NEEDS THE RIGHT BASE, and the two bias-forced
+   hull pieces are what anchor it: slots 0 and 1 carry the subtractions
+   that push them to the far end, so they are always the list's first
+   two entries. The list itself is the slot array plus 0xcd0.
+
+   THE RASTERISER IS RIGHT AND THE COUNT IS WRONG, which per-triangle
+   coverage separates. Instrumented, the port calls Rast_AddTri NINE
+   times and writes 864 pixels; the demo reaches Rast_AdditivePoly's
+   span build THREE times and leaves 249 blue-shifted pixels. Per
+   triangle that is 96 against 83 [observed, on hardware] -
+   close enough that the span walk, the coordinate and the palette are
+   all behaving. The whole difference is that nine triangles are drawn
+   where three should be.
+
+   AND THE SIX ARE REJECTED AS OFF-FRAME, NOT AS FACES. Each shell
+   reports three faces - its count word reads 2 - and all three carry
+   mode 1, so Mesh_MakeAdditiveEnvelope ran and nothing drops them at
+   the face level. What drops them is Rast_AdditivePoly's own early
+   outs, which reject a triangle whose x or y extent lies wholly
+   outside the frame, and those sit BEFORE the scratch word a watch can
+   see. So the earlier count of three was counting survivors, not
+   dispatches.
+
+   THE PROJECTION IS RIGHT AND SO IS THE REJECTION, which comparing
+   the corners settled. For the shell on object 6 the demo's four
+   project to (80,-77), (47,-60), (69,-54) and (77,-2) and ours to
+   (80,-78), (46,-61), (69,-55) and (78,-3) - a pixel apart at worst
+   [observed, on hardware].
+
+   EVERY y IS NEGATIVE: that shell sits entirely above the frame, so
+   Rast_AdditivePoly's max-y-below-zero test drops all three of its
+   faces. Object 7 lands at x 173 to 189, wholly off the right edge,
+   and goes the same way. ONLY OBJECT 5 IS ON SCREEN, and its three
+   faces are the demo's three survivors. The port rejects the same six
+   - add_span clips them - so both sides draw the same three triangles
+   from the same object.
+
+   SO THE EARLIER 249 AGAINST 1456 WAS NOT COVERAGE. It counted
+   blue-shifted pixels over a brightness threshold, and the demo's
+   shell is faint enough that most of its pixels fell under it. Both
+   sides cover the same area.
+
+   THE PATTERN IS A SMOOTH TWO-DIMENSIONAL FIELD, checked along both
+   axes [verified]: neighbouring bytes differ by a few, and so do bytes
+   256 apart. So a SMALL index step reads a smooth ramp and a step of
+   hundreds reads unrelated values. That is what separates a shell that
+   shimmers from one that speckles.
+
+   THE RATE, FROM THE DEMO'S OWN FORMULA, for the three faces of the
+   one shell that is on screen - recip(n) being 0x8000/n:
+
+       face   dudx (whole)   dvdx (8.8)   index step per pixel
+       0                 6         0.11                      6
+       1                 1        -7.05                  -1791
+       2                -6       -25.40                  -6662
+
+   And the port measured on one row: the first span steps u by -8 and v
+   by nothing, so its index steps -8 - which matches face 0; the second
+   steps u by -2 and v by SEVEN, so its index steps +1790 - which
+   matches face 1 [observed, on hardware].
+
+   SO BOTH SIDES AGREE ON THE RATES, and that is the problem. By the
+   demo's own arithmetic two of the three faces advance v about seven
+   whole rows a pixel, which on this pattern can only read as noise -
+   yet the demo's output over that box is a smooth 0x0a to 0x3e.
+
+   THE RATES, OFF THE HARDWARE. Halting at 0x002cb4c6, where the
+   gradients are stored, the registers hold dudx = -3 in its low word
+   and dvdx = 68 [observed, on hardware] - so v advances
+   68/256, A QUARTER OF A ROW A PIXEL, and the index creeps. Not the
+   seven rows a pixel the earlier reading gave.
+
+   AND THE FORMULA IS CONFIRMED by feeding it the same registers'
+   inputs - dyTotal 116, dyMid 11, width 41, and the SORTED corners'
+   coordinates (0,0), (127,0), (64,127):
+
+       t    = (dyMid * recip(dyTotal)) >> 7                    = 24
+       dudx = (dun * recip(width) * 2) >> 16                   = -3
+       dvdx = (dvn * recip(width)) >> 7                        = 68
+
+   both exact [verified]. The earlier derivation failed only on which
+   sorted corner carries which coordinate; the hardware settles that
+   too.
+
+   SO THE GRADIENTS ARE ONE AFFINE PAIR PER TRIANGLE, taken at the
+   knee, u in whole units and v in 8.8 - not a per-span division, which
+   is what src/rast.c had and what made v advance whole rows.
+   Rast_AddTri now computes them the demo's way.
+
+   THE SPAN LOOP ITSELF IS CONFIRMED. Halted at 0x002cb622 the
+   registers read D5 low word 0xfff9 and D6 low word 0xffe3, so that
+   span advanced u by -7 whole units and v by -29 in 8.8 - an eighth of
+   a row across the whole span. D7's low word held 0x0296 and D2's low
+   byte 0x7d, giving index 0x027d, which is the (v << 8) | u packing
+   this note already carries. A6 read 0x640eb6 and A0 0x648eb6, so the
+   palette is the pattern plus 0x8000 and the two sub-blocks are
+   adjacent in the chunk [observed, on hardware].
+
+   AND THE GRADIENT IS SMALL ONLY FOR SOME ORDERINGS. dv_num is
+   ((dv2 * t) >> 8) - dv1 with t in 0..0xff, so the first term is
+   always small and dv_num is about -dv1. The template gives two
+   corners v=0 and one v=127, so dv1 is zero - and the gradient a
+   fraction of a row - exactly when the v=127 corner sorts LAST in y,
+   and 127 when it sorts into the middle. The demo's sampled triangle
+   sorted to (0,0) (127,0) (64,127) and gave -29; ours sort both ways
+   and the middle ones give thousands.
+
+   THE UV BLOCK IS PER FACE.
+   Mesh_MakeAdditiveEnvelope walks a table at 0x002d1590 with its
+   source cursor advancing - six move.l (A4)+,(A3)+ inside the dbf -
+   so face n takes the n'th 24-byte block [verified, 0x002d157c]. The
+   three blocks are permutations of one triple:
+
+       face 0    (127,0)  (0,0)    (64,127)
+       face 1    (127,0)  (64,127) (0,0)
+       face 2    (64,127) (0,0)    (127,0)
+
+   The table is exactly three blocks; 0x002d15d8 starts an unrelated
+   one of screen corners. Because the numbers are the same three pairs
+   in every block, using block 0 for all three faces looks harmless -
+   and is not. It puts the v=127 corner in the MIDDLE of the y sort on
+   two faces of every three, where dv1 is 127 instead of 0, and the v
+   gradient comes out two orders of magnitude too steep.
+
+   THE RECIPROCAL IS SIGNED AND 0x002f111c IS A POINTER. The access is
+   muls.w ([0x2f111c,-,D6w*0x2]) and extension word 0x63b5 carries
+   I/IS=101, memory indirect POST-indexed: the longword at 0x002f111c
+   is fetched first and the index added to what it points at. Read as
+   a table base the entries are the zeros that pointer holds until the
+   run fills it. The table it points at is 0x7fff / n and runs both
+   ways - entry -18 is 0xf8e4, -1820 - so a negative width yields a
+   negative reciprocal, and taking abs(width) flips the shading of
+   every leftward span.
+
+   WITH ALL THREE IN PLACE THE GRADIENTS MATCH THE HARDWARE at a
+   matched tick 510 [observed, on hardware]:
+
+       +-----------------+-------------+-------------+
+       | dyt / dym / w   | demo        | port        |
+       +=================+=============+=============+
+       | 50 /  1 / -18   | -7 /   -29  | -7 /   -29  |
+       | 50 / 14 / -17   | -7 /  -527  | -7 /  -470  |
+       +-----------------+-------------+-------------+
+
+   The second row's inputs differ by the one frame between the two
+   captures - dym 14 against 13, width -17 against -18.
+
+   [open] THE PORT RASTERISES THREE ADDITIVE TRIANGLES WHERE THE DEMO
+   RASTERISES TWO. The demo's third face projects two corners onto the
+   same column, x 64 twice, so the width subtraction at 0x002cb48a
+   comes out zero and the beq drops it. The port's projection puts
+   that vertex at 65, the width is -5 rather than 0, and the face is
+   drawn with a dvdx of -1588 - a sheared triangle the demo never
+   draws. Turning the shells on therefore still costs 1.3 of mean
+   luminance, 24.8 against 23.5 [observed].
+
+   [open] AND THE PORT'S Y IS ONE PIXEL LOW across the whole ship at
+   this tick. Face 0's corners read (41,67) (59,68) (65,116) against
+   the demo's (41,66) (59,67) (64,115): x agrees but for that one
+   vertex, y is +1 at three quite different depths. A constant offset
+   across different depths is not the divide, and the centres are the
+   demo's own - addi.l #0x50 and #0x32 at 0x002d2d8a [verified] - so
+   it is the camera, not the projection. Tick 510 is key 4 at t 252,
+   late in a spline segment where one unit of camera moves a vertex a
+   pixel; the key-8 check in orb_underside.txt 3 matched exactly. This
+   gates the third triangle and belongs with the camera, not here.
+
+   THE PER-PIXEL ADD IS ONE LONGWORD. add.l D4,(A5)+ at 0x002cb63e
+   adds the palette entry to the whole four-byte pixel at once, so a
+   channel carries into the next and nothing clamps or saturates
+   [verified]. The port adds per byte and clamps to its own 6-bit
+   channel, which is a divergence and the reason it cannot wrap the
+   way the demo can.
+
+   THE PATTERN SUB-BLOCK THE PORT READS IS FOUR TIMES THE GUEST'S.
+   Sixteen consecutive bytes from relic.dat read
+
+       16 0e 0d 16 1b 16 24 2e 37 35 27 27 51 96 ad b2
+
+   and the guest's pattern at A6 holds
+
+       05 03 03 05 06 05 09 0b 0d 0d 09 09 14 25 2b 2c
+
+   which is the first list shifted right by two, exactly, on all
+   sixteen [verified live, on hardware]. Left unshifted every index is
+   four times too large, so both of Rast_AddTri's taps land on palette
+   entries far brighter than the demo's.
+
+   BOTH BLOCKS ARE CONDITIONED IN PLACE BY Flat_ConditionTables
+   [verified, 0x002cff42], which Space_LoadAssets runs once behind the
+   flag at 0x002e0c84. Neither conditioned form appears anywhere in
+   relic.dat, so searching the file for the bytes the guest holds finds
+   nothing and reads as the blocks being built from scratch; they are
+   not, they are these two sweeps over the loaded chunk.
+
+   The pattern is one byte at a time, 0x8001 of them:
+
+       pattern[i] = file[i] >> 2
+
+   The count is one past the 32768-byte block, so the palette's first
+   byte is shifted too; the palette's own pass discards that byte.
+
+   The palette is 193 longwords, NOT 256, and it is a permutation as
+   well as a shift - lsl.l #8 then lsr.w #8 drops byte 0 and leaves a
+   ZERO in byte 2:
+
+       entry = ((b1 & 0xf8) >> 2, (b2 & 0xf8) >> 2, 0, (b3 & 0xf8) >> 2)
+
+   SO THE CONDITIONED PALETTE CARRIES NO LIGHT AT ALL - byte 2 is
+   always zero and the envelope adds colour only, never a glow. The
+   mask keeps five bits of each byte before the shift, and indices
+   never reach the unconditioned tail above 192 because the two taps
+   sum to at most 126.
+
+   Verified byte for byte against the guest [observed, on hardware]:
+
+       +-------+----------------+----------------+
+       | entry | file bytes     | conditioned    |
+       +=======+================+================+
+       |    33 | 00 10 11 19    | 04 04 00 06    |
+       |    34 | 00 03 0a 30    | 00 02 00 0c    |
+       |    35 | 00 04 08 32    | 00 02 00 0c    |
+       |    36 | 00 0d 10 23    | 02 04 00 08    |
+       +-------+----------------+----------------+
+
+   and the guest holds exactly the right-hand column. src/geom.c keeps
+   its own conditioned copies rather than writing to the mapped image.
+
+   THE ENVELOPE'S ADD IS RIGHT UNSCALED, and the earlier claim that
+   the background behind it was two to four times too bright was an
+   artefact of scoring a PPM against a raw capture - across the HAM8
+   resolve. Resolving the demo's side first, over the 2306 pixels the
+   envelope covers at tick 1182:
+
+       +---------------------+-------+-------+-------+
+       |                     |   R   |   G   |   B   |
+       +=====================+=======+=======+=======+
+       | demo, resolved      |  78.0 |  94.0 | 148.6 |
+       | port, envelope off  |  37.6 |  54.1 |  76.0 |
+       | port, envelope on   |  59.5 |  83.0 | 147.4 |
+       +---------------------+-------+-------+-------+
+
+   [observed]. The port's background is about HALF the demo's, not
+   twice it, and with the envelope on the port lands close - B within
+   a point. So the unscaled add was correct and a shift down would
+   have made it worse. overview.txt 7 carries the measurement rule.
+
+   The shells are DRAWN ONLY WHEN Ship_SetAdditiveLit IS SET, which no
+   part does.
+
+   TREATING THE TEMPLATE AS 8.8 RATHER THAN WHOLE UNITS makes it
+   smooth and much closer, but it CONTRADICTS THE CODE: A0 is promoted
+   by a swap, which is a whole-number shift of 16, and the index's low
+   byte is that integer. It was tried and reverted for that reason -
+   the appearance improving is not evidence.
+
+   ONE THING DID COME OUT OF IT. g_FlatScroll is INHERITED, not
+   seeded: phase 7 never writes it, so it has been counting down since
+   an earlier part and the pattern is already somewhere specific when
+   the shot opens. Measured at 0x4200 five hundred frames in, which
+   back-extrapolates to 0x3600 at the cut [observed], and
+   src/part_underside.c now starts it there rather than at zero.
+
+   Until the per-pixel value is right the shells are DRAWN ONLY WHEN
+   Ship_SetAdditiveLit IS SET, which no part does.
+
+   Until that is found the shells are DRAWN ONLY WHEN
+   Ship_SetAdditiveLit IS SET, which no part does: turning them on as
+   they stand measures worse than leaving them out, 59.4 against 57.5.
+
+10.  Measuring A Glow
+
+8.  Measuring A Glow
+
+   READ THE BACK BUFFER, NOT THE FRONT. The HAM8 resolve CONSUMES byte
+   +2 in place: the front buffer is post-resolve, with final RGB and
+   LIGHT zeroed, and the back buffer still holds the raw channels.
+   Measured on one frame of the underside shot - the front has not one
+   of 16000 pixels with a non-zero byte +2, and the back has 2507, to
+   a maximum of 60 [observed, on hardware].
+
+   SO A FRONT-BUFFER CAPTURE PROVES NOTHING ABOUT A GLOW, and it reads
+   as the demo simply not drawing one. It also mismatches on RGB,
+   because relic_ppm's raw output is pre-resolve and the front buffer
+   is not. Any LIGHT agreement scored against a front buffer came from
+   a frame caught before the resolve reached it.
+
+   A CAPTURE THAT DROPS BYTE +2 SHOWS NO GLOW AT ALL. Every glow in
+   the demo - this flare, the bolt lines, the sparks - adds only to
+   LIGHT, so a comparison made on R, G and B cannot see any of them,
+   and two frames can agree closely while one draws a flare the other
+   has never heard of.
+
+   So amiga_fb's ppm is for geometry and its raw is for glow, and
+   tools/amiga/fbcmp.py scores LIGHT separately and says so when it
+   has not been given it.
+
+   TWO OTHER WAYS THE MEASUREMENT LIES:
+
+   The demo renders every second VBL, so stopping the emulator on the
+   wrong parity catches the front buffer part drawn. It reads as a
+   plausible dark frame rather than as an error - check a neighbouring
+   frame before believing a dark one.
+
+   The live offset is per HUNK, not per run. g_BlobFalloff and
+   g_PolarTable are in CODE_00 and almost everything else here is in
+   CODE_03, so one derived offset does not cover both; applying
+   CODE_03's to a CODE_00 address returns plausible garbage. Both of
+   those tables are load-time data anyway and are better read out of
+   the image.
+
+11.  The Centre Flare, Its Ghosts, And The Horizon Band
+
+   ONE MISSING SLOT ACCOUNTS FOR THREE MISSING THINGS. The demo's
+   2.10 and 2.11 show a flare at the orb, a row of ghost discs
+   running out of it, and a bright horizontal band across the whole
+   frame. We draw none of them, and all three are Orb_DrawCentreFlare
+   at 0x002d2c00 [verified].
+
+   IT IS A SCENE SLOT, NOT A RENDER STEP, which is why it is easy to
+   miss: Scene_RenderFrame (0x002cd892) is only Scene_DrawTexturedSky,
+   Scene_SortAndDrawAll, a call to 0x002ce81c that is two bytes of
+   rts, and Scene_DrawHorizonBand. The flare is reached from the
+   draw-kind dispatch INSIDE the sort, at 0x002d2b9c, so it lands in
+   depth order with the hull and the beams.
+
+11.1.  What Orb_DrawCentreFlare does
+
+   1.  The orb's world position, three longwords at 0x002ee894. The
+       third is g_OrbDrift, so it is not at the origin.
+
+   2.  A base size from g_OrbFlareSizes, eight longwords at
+       0x002ee9e8 indexed by (0x002e0b08) & 7 [verified]:
+
+           0x190  0x1e0  0x140  0x1b8  0x168  0x190  0x1e0  0x168
+            400    480    320    440    360    400    480    360
+
+       so the flare breathes on an eight frame cycle.
+
+   3.  The projection at 0x002d2c7a, which is Scene_TransformProject's
+       with two differences: THE NEAR PLANE IS 0x32, not 0xc8, and it
+       carries the size through the same divide.
+
+           depth  = y + 0x1f4,  and nothing is drawn at depth <= 0x32
+           sx     = (x << 8) / depth + 0x50
+           sy     = (z << 8) / depth + 0x32
+           radius = (size << 11) / depth,  clamped to 0x7f
+
+       That radius form is the one src/part_release.c already uses.
+
+   4.  sx and sy are kept at 0x002e0b3e and 0x002e0b42, and g_SunRange
+       0x002e0b62 is FORCED TO 0x7f00. That matters: g_SunRange is
+       what Flare_Draw gates and shifts on, so the orb borrows the
+       sun's machinery by planting the sun's number.
+
+   5.  Draw_Flare 0x002d4452 - which is already src/gfx.c's Gfx_Flare
+       - with the ray table at *(0x002f1028) and the colour ramp at
+       0x002ef430. THOSE RESOLVE TO THINGS WE ALREADY HAVE: the ramp
+       is slot 2 of the block at 0x002eeaf0, g_ColRampAmber, and the
+       table is g_RaySpikes - read live, its bumps are five positive
+       entries shaped 1,3,6,3,1, where g_RayArcs is negated and reads
+       back 0xffxx [observed].
+
+   6.  Flare_Draw 0x002cf2aa, which is already Space_DrawFlareGhosts:
+       the four ghosts reflected through (0x3c,0x3c) at -2, -1/2, -1
+       and +2. This is the row of discs.
+
+11.2.  The band is the flare's, not a horizon
+
+   Step 4 above also writes the band's two inputs, and that is the
+   whole of the coupling: g_HorizonBandRow 0x002e0bea takes sy, and
+   g_HorizonBandTarget 0x002e0b6e takes (radius - 0x38) * 2 << 8.
+
+   Scene_DrawHorizonBand 0x002d2530 then draws TEN ROWS OF 160,
+   starting at g_HorizonBandRow - 7:
+
+       g_HorizonBandOff 0x002e0bf8 non-zero  ->  nothing
+       g_HorizonBandLevel 0x002e0b6a eased half way to the target
+         each call, so the band lags the flare
+       D5 = (level >> 8) - 0x64, negated when positive, >> 2, - 0x1e
+       at or below -0x32 nothing is drawn - it fades, not switches
+       per pixel: the polar table byte, & 0xff, >> 1, eor 0x3f - a
+         horizontal falloff - plus D5; negatives skipped
+
+   THE AMOUNT IS NOT A PLAIN ADD. 0x002d3d34 saturating-adds it to R,
+   G and B at 0x3f and saturating-SUBTRACTS twice it from the light
+   byte at 0, so the band brightens the colour and takes the additive
+   glow back out. Ham8_BuildTables cannot then resolve the same glow
+   twice.
+
+   SO SECTION 7 IS WRONG WHERE IT SAYS THE BAND IS GATED OFF for this
+   phase. It is not gated at all; it is dark in our port only because
+   nothing sets its inputs.
+
+11.3.  Confirmed against the hardware
+
+   Driven to the frame where g_CamSrcX/Y/Z read 2700,-4870,7855 -
+   one tick of 2.11, our part 9 tick 1601 - the demo reads
+   [observed]:
+
+       g_SunRange            0x7f00    exactly what step 4 forces
+       flare screen place    107, 49
+       g_HorizonBandLevel    0x7e43    easing toward
+       g_HorizonBandTarget   0x8e00
+       g_HorizonBandOff      0
+
+   A row of 49 puts the band at rows 42 to 51, which is where it sits
+   in the capture. Our frame at the same tick has none of it.
+
+11.4.  What the orb's use needs beyond the hull's
+
+   LESS THAN IT LOOKS. orbscene.c's orb_draw already carried the
+   flare, already cited 0x002d2c00, and already took its size off
+   ORB_PULSE_MID - which IS g_OrbFlareSizes, read with the same
+   (step & 7), the same (r << 11) / depth and the same 0x7f clamp.
+   Space_DrawHorizonBand was already transcribed too, in src/space.c,
+   fed by the sun's visible count for the planet scenes. Three things
+   separate the orb's use of all that from the hull's:
+
+   o  THE NEAR PLANE. orb_draw projected through Ship_Project, whose
+      plane is the hull's 0xc8. Ship_ProjectFlare is 0x002d2c7a's,
+      with 0x32.
+
+   o  THE GHOSTS. Space_DrawOrbGhosts plants SPACE_ORB_RANGE into
+      g_SunRange and calls Space_DrawFlareGhosts, which is what
+      0x002d2c52 and 0x002d2c74 do between them.
+
+   o  THE BAND'S FEED. Space_StepOrbBand gives the existing band the
+      orb's row and target where Space_StepBand gives it the sun's.
+      The easing and the bias are one shared chain, so the sun's
+      scenes are untouched - verified, parts 2.1, 2.3b, 2.4, 2.7,
+      2.13 and 2.14 all render frame for frame as before.
+
+   MEASURED AGAINST THE HARDWARE at the matched frame of 11.3, mean
+   brightness across the band's rows [observed]:
+
+       row    demo    before    after
+       45    169.1     168.4    176.1
+       46    179.3     166.2    191.2
+       47    186.2     162.5    194.7
+       48    182.0     160.9    186.0
+       49    170.5     160.5    169.3
+
+   Our rows were flat where the demo had a bump; they now carry the
+   same bump at the same row. Absolute error over rows 42 to 51 falls
+   from 90611 to 73601. We overshoot the peak slightly, which is
+   section 11.5's business and not the band's.
+
+   THE BAND IS SUBTLER THAN IT LOOKS IN MOTION. The bias is never
+   positive, so the amount peaks around 29 of 0x3f directly under the
+   flare and reaches the frame edges at about 3. What reads as a hard
+   bright bar is that gentle rise sitting on top of an already bright
+   scene.
+
+
+11.5.  The pulse counter, and why a single frame cannot judge it
+
+   g_FlareSizeStep 0x002e0b08 picks the entry of eight every flare in
+   the scene is sized from, so its phase decides every radius at once.
+   TWO KINDS READ IT AND ONLY ONE ADVANCES IT [verified]: a flare slot
+   reads it and adds one at 0x002d2a4e, Orb_DrawCentreFlare reads it
+   at 0x002d2c0a and leaves it, and Anim_SceneTick adds one a tick at
+   0x002d6320 in the same breath as the object angle's 0x14. Both are
+   now in src/orbscene.c; the centre flare advancing the counter was
+   ours and is gone.
+
+   A SINGLE FRAME CANNOT JUDGE THE PHASE, and that is worth knowing
+   before anyone tries. Holding everything else still and shifting
+   only the phase swings the whole-frame absolute error against the
+   hardware from 763324 to 1513811 - a factor of two - so any one
+   frame's score says more about where the counter happens to sit
+   than about whether the code is right [observed]. The counter's own
+   value is the measurement to use, not the pixels.
+
+   IT IS TICK STATE AND NOT FRAME STATE, which matters more here than
+   the phase does. The demo renders once a tick, so the slot advances
+   and Anim_SceneTick's one happen together and the strobe is in demo
+   time. In the port frame() and step() run at different rates, and a
+   counter the DRAW carries advances per presented frame: the flicker
+   then follows the display. Worse, splitting it - some advances in
+   the draw and Anim_SceneTick's in the step - makes the step per
+   frame alternate, and the strobe stutters, pausing and then
+   rushing. So src/orbscene.c keeps the base in step(), seeds a
+   running index from it in OrbScene_Register, and lets the draw only
+   read: two frames inside one tick then draw the same sizes, which
+   is what the scene state says they should.
+
+   Driven at 17 ms a frame against 20 ms ticks the base goes 0, 7,
+   14, 21, 28, 35, 35, 42 - seven a tick, and a repeat where the host
+   outran the clock [observed].
+
+   EXACTLY ONE FRAME A TICK MAY COUNT ITS SLOTS, and that is the
+   second half of it. A tick can draw twice or not at all, so the
+   step is armed and the first frame after it is the one whose slot
+   count the next step folds in. Without the arm the first tick's
+   advance depended on whether a frame or a step came first - one at
+   20 ms a frame, seven at 17 - and six of the eight phases apart is
+   a different flare size for every slot in the scene for the rest of
+   the run. With it the base reads 2094 at tick 300 of 2.11 at 10,
+   17, 20, 25 and 33 ms a frame alike [observed].
+
+   AND THE RATES DO NOT MATCH, which is why no starting value would
+   align them. Read off the hardware at the frame of 11.3 the counter
+   runs 39 up over ten ticks, 3.9 a tick; ours runs seven - one for
+   the tick and one for each of six attach points [observed]. So the
+   demo draws about three flare slots a frame where we draw six, and
+   the phases drift apart whatever they start at. The absolute values
+   cannot be compared: the demo's counter is global and carries in
+   from the scenes before.
+
+12.  Open questions
+
+   -  The orb itself. It is a type 3 object, drawn by the branch at
+      0x002d2b3c, which loops ten times with a counter pair at
+      0x002d2bf8 and draws through Draw_GlowBlob - untranscribed, and
+      the largest remaining difference in the scene.
+
+   -  WE DRAW MORE FLARE SLOTS THAN THE DEMO - section 11.5. The
+      pulse counter advances seven a tick here and 3.9 a tick on the
+      hardware, so about three attach points are projecting for us
+      that do not for the demo. Which gate stops them is unread; the
+      flare slot's own at 0x002d2a90 is the place to start.
+
+   -  What the orb becomes once g_OrbNearMode is set. The other half
+      of the type 3 branch projects the claw point with size 0x96,
+      parks the result in 0x002cde42 onward and calls 0x002d1fdc and
+      0x002cdc3c - a different, nearer treatment, untranscribed.
+
+   -  The claws' second texture is g_ShipTexSlots[3] beyond doubt, and
+      our index 3 is the same 0x20000 at the same chunk offset. But on
+      the 258 pixels the swap changes, the demo's frame matches our
+      index 2 better than our index 3 - 14.5 against 19.9 [observed,
+      frame 389]. Those pixels are thin claw slivers where a pixel of
+      pose difference decides the comparison, so the measurement may
+      simply be unable to judge it; something about the sampling may
+      also still be wrong. The swap is implemented as the code says.
+
+   -  Three of phase 3's nine slots are meshes, built from globals at
+      0x002e4770 onward with their vertex buffers from 0x002f11e4
+      [verified, Space_BuildObjects 0x002d100a]. What they are is
+      unread.
+
+   -  Charge_UpdateAndDraw at 0x002ce288 is a second, richer version
+      of this idea - glowing charges that travel, shrink as they
+      close, and leave a flash where they land - and it belongs to
+      ANOTHER part, reached only through FUN_002cc3a2. It is the
+      first thing a search for the attach-point pulse finds and it is
+      not this scene's.
+
+   -  Draw_Flare at 0x002d4452 is Draw_FlareTurbulent's sibling and
+      differs in more than its tables: it subtracts a ray value
+      indexed by the angle, from a table the caller passes in A1.
+      Ray_BuildTables builds those and this scene does not use them.
+
+   -  What the demo's own random sequence is at any given tick. Our
+      Math_Rand is the demo's LCG exactly, but it has been drawn a
+      different number of times by then, so the head's radius and the
+      bolt's seed cannot be expected to match frame for frame - only
+      their distribution.

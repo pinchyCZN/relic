@@ -1,0 +1,80 @@
+# demo struct map   format=demo-struct-map/1
+#
+# GENERATED from the Ghidra database by
+# tools/ghidra/demo_export_maps.java. Do not hand-edit:
+# the database is the source of truth and the next export
+# discards anything written here.
+#
+#   type,NAME,KIND,SIZE,SRC,ORIGIN[,note]
+#
+# struct and union members:
+#   <TAB>name,type,offset,count,size[,note]
+# enum members:
+#   <TAB>name,value
+# a typedef has no members; its target is the note.
+#
+# count is blank for a scalar, decimal for an array, NxM
+# for [N][M] with N outermost. size is the member total.
+# Hex carries 0x; offsets are at least four digits.
+#
+# SRC and ORIGIN come from the type's Ghidra description,
+# whose first line reads
+#     [verified] origin=0007e360  what the thing is
+# SRC is verified / inferred / observed / guess, and
+# untagged where the description says nothing - which
+# structmap.py check reports.
+#
+# PADS ARE EXPLICIT, as (pad) rows, so that members plus
+# pads equal SIZE exactly. check enforces it.
+#
+# Commas inside a name, type or note were replaced with
+# semicolons on export. Nothing else is escaped.
+
+type,Relic_DatEntry,struct,0x24,verified,0021fab0,relic.dat directory record. Stride 0x24 proven by the lea (0x24;A1);A1 advance in Dat_LoadChunk and Dat_FreeChunk; field offsets by the loads those two perform. Allocation is size0+size1+size2; read length is size0. See docs/formats/relic_dat.txt
+	name,char,0x0000,16,0x10,16 bytes; SPACE padded; not NUL terminated
+	offset,uint,0x0010,,0x4,byte offset of the payload in relic.dat
+	size0,uint,0x0014,,0x4,bytes actually read from disk
+	size1,uint,0x0018,,0x4,headroom allocated BEFORE the data; data lands at base+size1
+	size2,uint,0x001C,,0x4,headroom allocated after the data
+	ptr,pointer,0x0020,,0x4,RUNTIME: base of the allocation; 0 when not loaded
+
+type,Relic_SceneObject,struct,0x50,verified,002d28ca,one entry of g_SceneObjects; stride 0x50 proven by the adda.l #0x50;A0 walk. Fields proven by the offsets Scene_TransformProject; Uv_GenerateFaceParams and Poly_DrawFaceList load. Gaps are genuinely unread; not padding. See docs/formats/geometry.txt
+	faces,pointer,0x0000,,0x4,-> the 14-byte face array; a relic.dat sub-block
+	verts,pointer,0x0004,,0x4,-> u32 nverts-1 then 12-byte vertices; a relic.dat sub-block
+	(pad),undefined,0x0008,,0x4
+	pFaceCount,pointer,0x000C,,0x4,-> u16 nfaces-1; its own sub-block
+	projected,pointer,0x0010,,0x4,scratch: 8 bytes per vertex; written by Scene_TransformProject
+	params,pointer,0x0014,,0x4,scratch: 28 bytes per face; written by Uv_GenerateFaceParams
+	posC0,sdword,0x0018,,0x4,world position
+	posC2,sdword,0x001C,,0x4,world position
+	posC1,sdword,0x0020,,0x4,world position
+	depthKey,sdword,0x0024,,0x4,set from the transformed depth; the draw-order sort key
+	(pad),undefined,0x0028,,0x4
+	type,sdword,0x002C,,0x4,1 sprite; 2 line; 3 and 4 particle paths; else polygon mesh
+	(pad),undefined,0x0030,,0x10
+	skip,sdword,0x0040,,0x4,non-zero skips the object entirely
+	(pad),undefined,0x0044,,0x8
+	cullMode,sdword,0x004C,,0x4,copied to g_CullMode: 0 negate the cross product; 2 no cull
+
+type,Relic_SproutBranch,struct,0x5A,verified,002d6be8,a Sprout octree BRANCH; 0x5a bytes - the adda.l #0x5a at 0x002d6bea. Laid out at the allocation cursor; and the pointer stored in the tree IS that cursor. split[0] is the A5 coordinate and the rest are four triples (v; v+h; v+2h) for A3; A4; D1 and D2 with h the halved extent; the visitors read split[0] at +0x40 and A3's +h and +2h at +0x44 and +0x46. See docs/effects/approach.txt section 4.3
+	pChild,void *,0x0000,8,0x20
+	pVisitor,void *,0x0020,8,0x20
+	split,short,0x0040,13,0x1A
+
+type,Relic_SproutLeaf,struct,0x27,verified,002d6b9a,a Sprout octree LEAF; 0x27 bytes - the adda.l #0x27 at 0x002d6b9c. Laid out at the allocation cursor; but THE POINTER STORED IN THE TREE IS THE CURSOR MINUS 0x20; so that a leaf and a branch present the same interface: visitors at pointer+0x20; payload at pointer+0x40. colour is 0xRRGG00BB with each component a nibble taken >> 4; which is the framebuffer's own byte order with a zero light byte. See docs/effects/approach.txt section 4.3
+	pVisitor,void *,0x0000,8,0x20
+	colour,uint,0x0020,,0x4
+	normalX,byte,0x0024,,0x1
+	normalY,byte,0x0025,,0x1
+	normalZ,byte,0x0026,,0x1
+
+type,Relic_TempleCell,struct,0x14,verified,0036d89e,one cell of the Aztec terrain; 64 x 64 of them in g_pTempleCells. Stride 0x14 proven by the adda.l #0x14 walk in Temple_BuildCellHeights and Temple_BuildCellTextures; and 64 x 64 x 20 is 0x14000 - the buffer's allocated size. Each cell is one QUAD of the 128 x 128 source maps; so the four y and the four c members are its corners in (r;c) (r;c+1) (r+1;c) (r+1;c+1) order. y is 0x1388 - (byte << 5); so a larger source byte is LOWER; a column walker lerps between two of them to get the height where its ray crosses; which is why a cell is self-contained. BOTH TEXTURE MEMBERS ARE SELECTORS; not pixels: tex picks a texture out of g_pTempleTexGround for the quad's top and c00 picks one out of g_pTempleTexWall for its wall; each through Temple_TileOffset. See docs/effects/temple.txt section 7.
+	y00,short,0x0000,,0x2
+	y01,short,0x0002,,0x2
+	y10,short,0x0004,,0x2
+	y11,short,0x0006,,0x2
+	tex,uint,0x0008,,0x4
+	c00,short,0x000C,,0x2
+	c01,short,0x000E,,0x2
+	c10,short,0x0010,,0x2
+	c11,short,0x0012,,0x2

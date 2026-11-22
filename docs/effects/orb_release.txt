@@ -1,0 +1,481 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                            THE ORB RELEASE
+
+
+Abstract
+
+   The scene after the explosion: a long pass around the underside of
+   the ship, then the ship letting the sphere go. Space_RunRelease at
+   0x002cbef8, modes 0xd, 0x10 and 0x11.
+
+   THE WHOLE SCENE IS ONE ROUTINE and it is NOT part of Space_RunPart,
+   which returns before it. SpaceModule_Part0 calls the two in
+   sequence [verified, 0x002c83fa].
+
+   Its effects are mostly ones the demo already has. The flare is
+   Draw_Flare with a different ramp, the crack shells are
+   Rast_AdditivePoly and Draw_LineAA - the electric arcs' own two
+   primitives - and the opening and closing white-outs are the same
+   LIGHT washes used elsewhere. What is new is the crack mask.
+
+Table of Contents
+
+   1. The Three Phases
+   2. It Opens White, And It Ends White
+   3. The Flare
+   4. The Cracks
+   5. The Rates
+   6. The Camera Is An Orbit
+   7. Open questions
+
+1.  The Three Phases
+
+   Space_RunRelease is a linear script, each phase a render-and-tick
+   loop polling g_QuitRequested [verified, 0x002cbef8]:
+
+    +----+------+---------------------------+-------+---------------------+
+    | ph | mode | skip table                | fuse  | render              |
+    +====+======+===========================+=======+=====================+
+    |  1 |  0xd | g_ExplosionSceneSkipTable | 0x320 | Scene_RenderRelease |
+    |  2 | 0x10 | g_ReleaseMidSkipTable     | 0x096 | Scene_RenderRelease |
+    |  3 | 0x11 | g_ReleaseEndSkipTable     | -     | 0x002cdaac          |
+    +----+------+---------------------------+-------+---------------------+
+
+   THE SKIP TABLES NARROW AS IT GOES, and that is the release itself:
+
+       phase 1   draws  0-7, 9-14, 38
+       phase 2   draws  3, 4, 9-14, 38
+       phase 3   draws  3, 4, 9-14
+
+   ONLY THREE OF THE SIX CLAWS ARE EVER DRAWN. The claws are slots 12
+   to 17 and no table in this scene reaches past 14, so 15, 16 and 17
+   are skipped throughout. Confirmed live: g_SceneObjects slot 15's
+   +0x40 reads 1 and slot 12's reads 0 [observed, on hardware]. A
+   claw missing from the near side is the demo's own table, not a
+   fault - see formats/geometry.txt 6.1 for the slot map.
+
+   So the hull sheds a group of slots at a time and the last phase
+   drops slot 38 as well. Phase 1 reuses the explosion's own table
+   [verified, 0x002cbf9a]; the other two are its own, and the five
+   tables are contiguous from 0x002ccb80.
+
+   THE SETUP REBUILDS EVERY OBJECT. Space_RunRelease +0x22 calls
+   Space_BuildObjects, so the claws come back on their ORIGINAL
+   texture and the pass the orb sequence swapped them to does not
+   survive into this scene; nothing here swaps them again.
+
+   AND THE SKY PANS WITH THE CAMERA, so the stars move as it orbits -
+   Scene_RenderRelease draws it from the camera's own angles, not
+   from a fixed pan.
+
+   THE LIGHT BASE IS THE ORB SEQUENCE'S, NOT THE EXPLOSION'S.
+   Ham8_BuildTables is handed (0x3f, 0x3f, 0x4f) at the routine's first
+   instruction [verified], the same triple the claws and the orb ran
+   under, so the scene reads blue rather than the explosion's paler
+   blue-white.
+
+2.  It Opens White, And It Ends White
+
+   FLASH_WASHFROMFUSE KEYS ON THE FUSE, NOT ON A LEVEL [verified,
+   0x002cdbe0]:
+
+       amt = g_SceneFuseTicks - 0x2ee
+       if amt < 0: do nothing
+       amt <<= 1, capped at 0x3f
+       every pixel: LIGHT = g_LightSatLut[LIGHT + amt]
+
+   Phase 1 seeds the fuse 0x320, which is 50 above the 0x2ee
+   threshold, so the scene OPENS saturated and fades down over its
+   first 50 ticks. Phase 2's fuse of 0x96 is far below it and the wash
+   never fires again.
+
+   THAT IS THE OTHER HALF OF THE EXPLOSION'S ENDING. Neither scene
+   holds a whole white-out: the explosion's wash saturates and stays
+   there for its last seventy ticks (effects/explosion.txt 4) and this
+   one fades that same white away. A port that renders either part on
+   its own sees half a transition.
+
+   THE END IS A HARD FILL, NOT A WASH. After phase 3 the routine calls
+   Space_FillWhite with 0x3f3f3f3f and ticks twice more [verified,
+   0x002cc096], so the last frames are a flat fill of every channel.
+   Flash_SetLightFromOrbDepth ramps into it from g_OrbDepth below 0xdc,
+   SETTING rather than adding: LIGHT = (0xdc - g_OrbDepth) * 4, low
+   byte only.
+
+3.  The Flare
+
+   THE PURPLE SUN FLARE IS Draw_Flare, the routine the explosion's ray
+   burst already uses, with a different ramp and a radius that grows as
+   a square [verified, 0x002cda5c]:
+
+       r = ((g_FlareGrow >> 8) ^ 2 / 2) * 4 + 0x1e
+       if r <= 0x23: draw nothing
+       if r >  0x7f: r = 0x7f
+
+   g_FlareGrow is seeded 0x7f00, so r starts clamped at 0x7f and the
+   flare is at full size from the first frame. Phases 1 and 2 centre it
+   on g_OrbScreenX / g_OrbScreenY with g_ColRampMagentaWide; phase 3
+   centres it on (0x50, 0x32) with g_ColRampPale, and zeroes
+   g_FlareGrow on entry [verified, 0x002cdafc] - which is what makes
+   the flare subside before the cracks appear.
+
+   THE TWO RAMPS ARE WHY IT CHANGES COLOUR. Nothing else about the call
+   differs.
+
+4.  The Cracks
+
+   CRACK_DRAWSHELLS IS LIGHT ESCAPING FROM INSIDE THE SPHERE
+   [verified, 0x002cdc3c], and IT RUNS IN EVERY PHASE, by two routes.
+
+   IN PHASES 1 AND 2 IT IS A SCENE OBJECT. Scene_SortAndDrawAll draws
+   the orb's slot by setting g_OrbScreenX, Y and Radius from the sorted
+   object and calling Orb_DrawTexturedSphere and then Crack_DrawShells
+   [verified, 0x002d2bd2]. The slot is drawn only when its depth is at
+   least 0x1f4 and its projected radius under 0x50.
+
+   IN PHASE 3 THE SLOT IS GONE and the render calls the same pair
+   directly, through Orb_ProjectAndFlare - which is why
+   g_ReleaseEndSkipTable drops slot 38. The two routes draw the same
+   thing; the direct one just lets the phase order it after the warp.
+
+   THE SAME 0x50 RADIUS GATE GUARDS BOTH.
+
+   THE MASK IS TWO SINE FIELDS, NOT A TEXTURE. For each of
+   g_CrackVertCount points in g_CrackVerts:
+
+       a = g_SinTable[((x >> 2) + g_CrackPhaseA) & 0x1fff]
+       b = g_SinTable[((z >> 2) + g_CrackPhaseB) & 0x1fff]
+       keep the point only if both a and b are >= g_CrackThreshold
+
+   A dropped point is marked 0x7fffffff and every edge touching it is
+   skipped, so g_CrackThreshold opens and closes the whole network as
+   one value.
+
+   NOTHING IN THIS SCENE MOVES IT. Space_RunRelease zeroes it at setup
+   and none of the three mode handlers touches it [verified,
+   0x002cbf30 and the handlers in section 5]; the only animator is
+   mode 0xe, which belongs to the scene after this one. So the cracks
+   here are held fully open and ALL the motion comes from the two
+   phases sliding the sine fields over the surface.
+
+   A SURVIVING POINT IS ROTATED AND THEN SCALED BY THE ORB'S OWN
+   PROJECTED RADIUS, g_OrbScreenRadius >> 5, so the rig tracks the
+   sphere's apparent size rather than sitting in world space. Every
+   coordinate is offset by g_OrbScreenX / g_OrbScreenY at draw time.
+
+   EACH EDGE BECOMES A QUAD AND A LINE. Pass two walks g_pCrackEdges -
+   a count then index pairs - sorts each pair by depth, clips the near
+   end against z = 0, and then draws:
+
+       Rast_AdditivePoly twice, A1 = A2 = A3 = 0x7f, A4 = 0x40, A5 = 0
+       Draw_LineAA between the two QUARTER points
+
+   THE QUADS ADD THROUGH THE CONDITIONED FLAT TABLES, the same pair
+   the ship's mode-1 faces use - Flat_ConditionTables builds them out
+   of the geometry chunk's tail [verified, 0x002cff42]. A scene that
+   draws the orb WITHOUT the ship still needs them: the conditioning
+   runs once and latches, so with no chunk loaded it leaves an
+   all-zero pattern behind and every quad adds nothing at all. The
+   white lines keep drawing, which makes it read as the rays being
+   gone rather than as a missing load.
+
+   THE LINE IS AT THE QUAD'S INNER EDGE, NOT ITS FAR END. The movem at
+   0x002cde14 pops the quarter points back into D0 to D3, so the line
+   lies on the sphere's surface where the shell attaches [verified].
+   Drawing it at the outer pair puts the glowing crack out in space
+   with the shell hanging off it the wrong way round.
+
+   THESE ARE THE ELECTRIC ARCS' OWN PRIMITIVES with the same gradient
+   setup; only the vertices differ. The quad's corners come off the
+   endpoints shifted right two, so its width tracks the point's own
+   coordinate - which is why the shells along one crack are different
+   sizes. The line is what makes the crack itself read as glowing.
+
+   THE CRACK NETWORK IS AN IFF TDDD OBJECT LINKED INTO THE
+   EXECUTABLE, 102 points and 88 edges, loaded once by
+   Crack_LoadGeometry [verified, 0x002cc244]. The modeller file is a
+   FLAT sketch - every point's z is zero - whose x and y are read as
+   longitude and latitude and wrapped onto a sphere at load time.
+   formats/tddd.txt has the chunk layout and the arithmetic.
+
+   THE AUTHORED GRID IS 0..126 BY 2..128, integers only, and every one
+   of the 88 edges joins a point below index 58 to one at or above it.
+
+   THE ORB IS A TEXTURE-MAPPED BALL AND IT ARRIVES BRIGHTEST FIRST.
+   Orb_DrawTexturedSphere [verified, 0x002d1fdc] is Draw_GlowBlob's
+   skeleton - the same rejects, the same g_pSpanHalfWidth chord, the
+   same span walk - with the glow's add replaced by a texture fetch
+   that writes a WHOLE 4-byte pixel. Two hops through
+   g_SphereNormalTable, less g_SceneAngleB then less g_SceneAngleA,
+   give the texel.
+
+   THE TEXTURE IS Fcrust, 0x40000 bytes of relic.dat - 256 x 256
+   four-byte pixels, loaded by name at SpaceModule_Part0 +0x4e
+   [verified, the string at 0x002e0d13]. ITS LIGHT BYTE IS ZERO IN ALL
+   65536 TEXELS [verified], which is what leaves byte +2 free for
+   everything drawn over it. It is bright polygonal plates separated
+   by near-black crack lines - a crust, which is what the demo calls
+   it.
+
+   THE SEAM ACROSS THE EQUATOR IS THE DEMO'S OWN, not a mapping
+   fault. g_SphereNormalTable steps 512 a row and 1024 across dy = 0,
+   so the row at the orb's centre is a visible discontinuity whatever
+   the rotation. A demo capture at the same centre and radius -
+   (0x4f, 0x32) radius 0x1b - carries the same line in the same place
+   [observed, on hardware], and the two spheres agree on the dark
+   upper cap, the cyan patch and the bright band below it. Smoothing
+   it would be a divergence.
+
+   THE DEMO'S CAPTURE CANNOT SHOW THE CRACK LINES. Draw_LineAA writes
+   byte +2 only and a PPM of the render target drops that channel, so
+   the lines are absent from the comparison while the sphere is not.
+
+   AND ONE THRESHOLD IS THE WHOLE REVEAL:
+
+       D5 = (g_FlareGrow >> 8) >> 1
+       draw the texel only if its B channel less D5 is >= 0
+
+   g_FlareGrow falls 0x64 a tick from 0x7f00, so D5 runs 0x3f down to
+   0 by tick 326.
+
+   IT REVEALS THE PLATES BEFORE THE CRACKS, not the other way about.
+   B is the texture's widest channel and the crack lines are its
+   darkest part, so the brightest plate highlights clear the threshold
+   first and the network fills in last [observed]:
+
+       +------+------+-------------------+
+       | tick |   D5 | texels drawn      |
+       +======+======+===================+
+       |    0 | 0x3f |  0.9%             |
+       |   77 | 0x30 |  4.9%             |
+       |  158 | 0x20 | 24.2%             |
+       |  240 | 0x10 | 68.5%             |
+       |  326 |    0 |  100%             |
+       +------+------+-------------------+
+
+   Texels with B under 8 - the crack lines - are 12.3% of the texture.
+
+   SO THE TEXTURE'S CRACKS ARE DARK AND THE GLOW IS DRAWN OVER THEM.
+   Crack_DrawShells' additive quads and lines land on the same network
+   the texture paints black, and that is what reads as light escaping
+   from inside the sphere. Nothing animates the texture itself.
+
+   ORB_PROJECTANDFLARE IS WHAT PUTS THE ORB ON SCREEN [verified,
+   0x002d1f52]. Phase 3's render calls it with the world point (0, 0)
+   at depth g_OrbDepth:
+
+       g_OrbScreenX = (x << 8) / depth + 0x50
+       g_OrbScreenY = (y << 8) / depth + 0x32
+       g_OrbScreenRadius = 0x3200 / depth
+
+   With x and y both zero the orb sits at the frame's centre and only
+   the radius moves, so the shot is the sphere growing toward the
+   camera.
+
+5.  The Rates
+
+   ONE HANDLER PER MODE, all in Anim_SceneTick [verified, 0x002d6058,
+   0x002d60cc and 0x002d6162]:
+
+    +---------------------------+----------+----------+----------+
+    | per tick                  | 0xd      | 0x10     | 0x11     |
+    +===========================+==========+==========+==========+
+    | g_FlareGrow               | -0x64    | -0x64    | -        |
+    | g_ApproachSpin            | +0x14    | +0x14    | +0x14    |
+    | g_FlatScroll              | -0x200   | -0x200   | -0x200   |
+    | g_CrackPhaseA             | +0x25    | +0x25    | +0x25    |
+    | g_CrackPhaseB             | +0x53    | +0x53    | +0x53    |
+    | g_SceneAngleA             | +2       | +2       | +1       |
+    | g_SceneAngleB             | -        | -        | +2       |
+    | Strut_AnimateClaw(0)      | -        | TWICE    | -        |
+    | g_OrbDrift                | -        | +vel     | -        |
+    | g_OrbDriftVel             | -        | +5       | -        |
+    | g_OrbDepth                | -        | -        | -2       |
+    | g_WarpParamA              | -        | -        | +0xa     |
+    | g_WarpParamB              | -        | -        | +1       |
+    | cam z (0x002e0b96)        | -        | -        | +0x1e    |
+    | g_CameraYaw               | -        | -        | -0xa     |
+    | g_SceneFuseTicks          | -1       | -1       | -        |
+    +---------------------------+----------+----------+----------+
+
+   THE CLAWS OPEN AND NEVER SNAP. Mode 0x10 calls Strut_AnimateClaw
+   with D0 = 0, and D0 is what licenses the latch - so only the
+   opening stage runs, where the orb sequence passed 1 and got the
+   clamp (effects/orb_clamp.txt 2). It calls it TWICE a tick, so the
+   joints travel at double the rate they opened at.
+
+   AND THEY START FROM ZERO, NOT FROM THE CLAMP'S SHUT POSE.
+   Space_RunRelease +0xb4 calls the reset at 0x002cca5a, and all
+   three joints read zero live at tick 419 [observed, on hardware] -
+   not the (562, 68, 562) the clamp leaves behind. From zero, joint 0
+   reaches the -0x1ee limit in 123 ticks of phase 2's 150, so the
+   claws are fully open with time to spare.
+
+   THE ORB IS SORTED AMONG THE HULL, NOT DRAWN AFTER IT. Its slot
+   body sits inside Scene_SortAndDrawAll's loop [verified,
+   0x002d2bac], so the hull paints over the orb and the orb over the
+   hull by depth. Drawing it after the ship puts it on top of
+   everything, which shows as the sphere floating in front of a claw
+   that should be in front of it.
+
+   VERIFIED AT TWO TICKS against hardware [observed]:
+
+       +------+-------------------+-------------------+
+       | tick | demo              | port              |
+       +======+===================+===================+
+       |  419 | 73, 63   r33      | 73, 63   r32      |
+       |  642 | 123, 56  r51      | 123, 55  r51      |
+       +------+-------------------+-------------------+
+
+   AND THE ORB LEAVES UNDER CONSTANT ACCELERATION: g_OrbDrift gains
+   g_OrbDriftVel and the velocity gains 5, both from zero, which is
+   the same shape as the clamp's snap run the other way.
+
+   PHASE 3 HAS NO FUSE. It ends when g_OrbDepth falls to 0xc8, and the
+   depth starts at 0x258 and drops 2 a tick, so the phase is
+   (600 - 200) / 2 = 200 TICKS and the scene is 800 + 150 + 200 =
+   1150 in total.
+
+   THREE LENGTHS FALL OUT OF THOSE RATES:
+
+   -  THE FLARE OCCUPIES THE FIRST 40% OF THE LONG SHOT. g_FlareGrow
+      starts 0x7f00 and falls 0x64 a tick, and the radius formula
+      drops below its own 0x23 cutoff once g_FlareGrow is under
+      0x200 - at tick 320 of phase 1's 800.
+
+   -  THE CRACKS RUN THE WHOLE OF PHASE 3. g_OrbScreenRadius is
+      0x3200 / g_OrbDepth, so it climbs 21 to 64 across the phase and
+      never reaches the 0x50 that would gate Crack_DrawShells off.
+
+   -  THE CLOSING RAMP IS THE LAST TEN TICKS.
+      Flash_SetLightFromOrbDepth does nothing until g_OrbDepth is
+      below 0xdc, which is tick 190 of 200.
+
+6.  The Camera Is An Orbit
+
+   CAMERA_ORBITSTEP IS CALLED FIRST BY MODES 0xd AND 0x10, so it
+   advances once a tick [verified, 0x002d5704]:
+
+       target = Vec_Rotate2Axis((0, -0x2328, 0), g_CamOrbitB, g_CamOrbitA)
+       target.z += 0x1b58
+       g_CamOrbitA += 8 ; g_CamOrbitB -= 4 ; both masked to 0x1fff
+
+   So the camera sits 9000 out and 7000 up and CIRCLES THE ORIGIN.
+   Phase 1 runs 800 ticks at 8 a tick, which is 6400 of the table's
+   8192 - about 78% of a turn, and that is the long pass around the
+   underside. Space_RunRelease seeds the angles 0x446 and 0x872.
+
+   THE ORB IS NOT AT THE ORIGIN. Its slot reads a world position of
+   three longwords from 0x002ee894 - (0, 0, g_OrbDrift), seeded
+   0xc800 - and Scene_SortAndDrawAll's projector takes that DOWN BY
+   16 before it transforms [verified, 0x002d2bac and 0x002d2c7a]. The
+   drift is what carries the orb away once mode 0x10 accelerates it.
+
+   THE SLOT PROJECTOR IS NOT THE HULL'S. It rotates by the latched
+   heading, subtracts the camera, rotates by yaw and pitch, adds
+   0x1f4 to the depth, and then:
+
+       radius   = (size << 11) / depth        ; size is 0x96 for the orb
+       screen x = (x << 8) / depth + 0x50
+       screen y = (z << 8) / depth + 0x32
+
+   Phase 3 is the exception and the only place the frame centre is
+   the answer: the slot is gone by then and Orb_ProjectAndFlare
+   projects (0, 0) at g_OrbDepth directly. Using that for phases 1
+   and 2 pins the orb to the middle while the ship swings past it,
+   which reads as the SHIP being offset when it is the orb that is
+   wrong. Read live the orb is at (73, 63) radius 33 [observed, on
+   hardware].
+
+   PHASE 3'S BACKGROUND IS THE SHIP'S HULL, NOT THE SKY. Its render
+   opens with Warp_FullscreenAffine and never calls
+   Scene_DrawTexturedSky [verified, 0x002cdaac], so that shot has no
+   stars in it at all - the saucer fills the frame behind the falling
+   orb. The texture is Fshiptextures' FIRST 256x256 block, held in
+   g_ShipTexSlots[1]: the slot points at 0x006561a0 and the bytes
+   there match block 0 of the chunk at the same offset [observed, on
+   hardware]. Slots [1], [2] and [3] are three 0x40000 buffers
+   back to back and SpaceModule_Part0 loads Fcrust over [2], so the
+   middle third of Fshiptextures is replaced for this scene.
+
+   IT TURNS AND ZOOMS. Three corners go through
+   Warp_ScaleRotateCorner - scaled by g_WarpParamB >> 8, then rotated
+   by g_WarpParamA - and the across and down deltas come off them;
+   each pixel copies a whole longword from the texture at
+   (v & ~0xff) | (u >> 8 & 0xff).
+
+   BOTH ACCUMULATORS RUN IN 24.8 AND THE INDEX TAKES U'S INTEGER
+   PART. The demo's ror.l #8 on the u terms puts the fraction in the
+   TOP byte so that addx.w can fold its carry straight into the
+   integer, which leaves the integer sitting in the low byte for
+   move.b to lift out [verified, 0x002d3fe0 and 0x002d4008]. Reading
+   u's low byte as though it were a plain integer samples the
+   FRACTION instead, and the hull comes out as streaking blocks of
+   colour rather than a surface. Mode 0x11 runs g_WarpParamA up 0xa a
+   tick and g_WarpParamB up 1 from a seed of 0xaa, so the hull
+   rotates slowly and grows as the orb approaches.
+
+   PHASE 3 RESETS THE CAMERA; IT IS A NEW SHOT. Space_RunRelease
+   +0x13c to +0x164 puts the target at (0, 0, 0x251c) and the
+   orientation at yaw 0, pitch -0x800, and mode 0x11 then runs the
+   target's z up 0x1e a tick and the yaw down 0xa - Camera_OrbitStep
+   and Camera_TrackTarget are not called at all [verified]. That is
+   the view from below with the ship overhead and the orb falling
+   toward the lens.
+
+   MEASURED 154 TICKS IN [observed, mode 0x11 live]: yaw -1540, which
+   is exactly 154 steps of -0xa from zero, and pitch still -0x800.
+   The latched camera z reads 14090 against a target of 14120,
+   because the render latches BEFORE the tick runs and so trails it
+   by one step.
+
+   AND PHASE 3'S RENDER TAKES THE SECOND OBJECT ANGLE STRAIGHT FROM
+   g_SceneAngleB [verified, 0x002cdaf2], where Scene_RenderRelease
+   derived it from the pitch. Different render, different rule.
+
+   AND THE SETUP SEEDS THE CAMERA'S ORIENTATION: g_CameraYaw 0x37a0
+   and g_CameraPitch -0x286 at Space_RunRelease +0x5e and +0x68
+   [verified]. Starting them at zero points the camera away from the
+   origin and EVERY SHIP FACE IS THEN REJECTED as unprojectable, which
+   reads as the ship being absent rather than as a camera fault - the
+   orb survives it only because its own placement does not go through
+   that transform.
+
+   THE SECOND OBJECT ANGLE COMES OFF THE PITCH, NOT FROM
+   g_SceneAngleB. Scene_RenderRelease +0x64 takes the latched
+   g_CameraPitch, shifts it right five and inverts the LOW BYTE only,
+   and writes that to 0x002e0bee, which the object transform and
+   Crack_DrawShells both read. Measured live, a pitch of -305 gives
+   -247 [observed, on hardware].
+
+   THE TARGET IS THE CAMERA'S POSITION, NOT ITS LOOK-AT. The render
+   latches it into the camera and Camera_TrackTarget builds the yaw
+   and pitch from two addends the handlers set. The same trap as the
+   orb pan's - effects/orb_underside.txt 3.
+
+   AND WHICH ADDEND GOES ON WHICH AXIS DECIDES THE YAW RATE.
+   Camera_TrackTarget adds 0x002e0b4e to the TARGET'S X and
+   g_CamAim12A to its Z [verified, 0x002d57c6 and 0x002d57d8], and
+   modes 0xd and 0x10 put 0x1f4 in the first and -(g_OrbDrift >> 4)
+   in the second. Swapping them leaves the camera's POSITION correct
+   to within a few units and its yaw accumulating about 30% slow,
+   which swings the whole scene out of frame and back. Measured at
+   tick 419: 12749 against the demo's 12753 once the two are the
+   right way round, and the orb then projects to (73, 63) radius 32
+   against (73, 63) radius 33 [observed, on hardware].
+
+7.  Open questions
+
+   -  THE BLUE HALO is not identified. g_ColRampPale on phase 3's
+      flare is the candidate, but nothing has been measured against a
+      frame.
+
+   -  0x002d5704 in the setup, 0x002d4258 (the rotate in
+      Crack_DrawShells' first pass) and 0x002cde4e.
+
+   -  WHAT g_pOrbTexture POINTS AT. The orb's texture is fetched a
+      longword at a time from it plus 0x20200, the same bias the ring
+      uses on Fplasma, but the chunk behind the pointer has not been
+      identified.

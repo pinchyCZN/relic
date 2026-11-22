@@ -1,0 +1,412 @@
+Fingerprints - which globals say WHICH FRAME this is
+====================================================
+
+Purpose: for each part, the demo globals that identify a frame, so a
+frame of the running demo can be paired with one of our ticks without
+guessing. Read by tools/amiga/symbols.py and served by the
+amiga_fingerprint MCP tool; the prose here is half of it, so this file is
+the data rather than having a machine copy beside it.
+
+
+PAIR ON THE CAMERA, NEVER ON A CLOCK
+------------------------------------
+The demo's clock and its camera do not advance together: it writes the
+clock first and evaluates with the previous value. A frame can therefore
+sit several ticks from where its clock puts it, and a breakpoint halt is
+a whole frame past the state that was captured.
+
+A tick whose x, z and heading all match is the frame, every time, where
+a clock is only ever close. So the rows below name position and bearing
+as the matching fields, and where a clock is listed at all it is marked
+as context - something to print, not something to match on.
+
+AND READ THE CAMERA AT THE HALT when a breakpoint stopped the demo. The
+captured state is one frame behind what the walkers are using, which is
+enough to make a correct ray direction of 258 read as a wrong 248.
+
+BUT A CAMERA IS NOT ALWAYS ENOUGH EITHER. In the window scene cam
+-347,-1699,687 is identical for every tick from 0 to 152, so the camera
+alone pairs a frame with a hundred and fifty candidate ticks and reports
+the first one. Where a row has a discriminator - there, g_PullBackPos -
+it is named, and a pairing that ignores it is not a pairing.
+
+
+ADDRESSES HERE ARE IMAGE ADDRESSES
+----------------------------------
+The ones Ghidra shows, which is what every other document in docs/
+quotes. The live address is derived per hunk at the moment of reading -
+see tools/amiga/symbols.py. Nothing in this file is a live address and
+nothing in it should ever become one: AmigaDOS allocates every hunk
+separately, so there is one slide per hunk, and a slide belongs to the
+run it was measured in. Two runs have differed by 0x20 in CODE_03
+alone.
+
+A BSS GLOBAL IS REACHED THROUGH A RELOCATION. The two BSS hunks hold
+no file bytes, so the two-anchor search that derives a CODE hunk's
+slide has nothing to match and refuses them. What they do have is
+every pointer the loader patched into them: the file holds the offset
+within the destination hunk, the running machine holds that offset
+plus the destination's base, and the patch site sits in a CODE hunk
+whose own slide is derivable the ordinary way. The difference between
+the two longwords is the base.
+
+    41 f9 00 00 00 00    lea <BSS_04 + 0>,A0      in the file
+    41 f9 00 4f f3 90    lea 0x004ff390,A0        live
+
+so BSS_04 based at 0x004ff390 and its slide is 0x1c3570 in that run.
+tools/amiga/symbols.py does this, holding to the same rule the anchor
+search does - two relocations must agree before a slide is reported,
+because one site could be read through a wrong CODE slide or have
+been overwritten by the demo since. The file carries 6,605 RELOC32
+entries, 31 of them into BSS_04 and 5 into BSS_01, so there is always
+a second opinion.
+
+TWO HUNKS REALLY DO SLIDE BY DIFFERENT AMOUNTS, which is the whole
+reason this is done per hunk: one run measured CODE_03 at +0x1c3564 and
+CODE_06 at +0x19ee50, by two independent methods agreeing - the UV11
+pattern search and the anchor derivation in symbols.py. THAT PAIR IS
+NOT A CONSTANT. It is an illustration, not a value to reuse.
+
+AND ONE ANCHOR IS NOT ENOUGH TO FIX A SLIDE. Searching for the shot-1
+camera track at image 0x003e1350 finds it at four addresses 12 bytes
+apart, because the track repeats every 12 bytes; that anchor alone is
+ambiguous by a multiple of 12. symbols.py therefore requires TWO
+independent anchors from different parts of the hunk to agree before it
+reports a slide at all, and refuses rather than picking when they do
+not.
+
+Prefer a SYMBOL NAME over an address. A name resolves through
+reverse/exports/relic/symbol_map.txt, so it survives the demo being
+re-analysed and it says what the thing is. An address is for a global
+Ghidra has not named yet - and a row carrying one is a small debt: the
+name belongs in Ghidra, and then here.
+
+
+THE FORMAT
+----------
+Blocks are opened by ".fingerprint <scene>" at column zero and closed by
+".end". Everything outside a block is prose and is ignored, as is any
+line inside one that is not "key = value" - so this stays a document.
+
+THE ONE RULE THE PROSE HAS TO KEEP: no paragraph may begin a line with a
+dot. A directive is any column-zero line starting with one, so a
+sentence that wraps to put ".fingerprint" or ".end" at the start of a
+line becomes a malformed directive and the parser stops. Rewrap it, or
+indent it - which is easiest to get wrong while writing about the
+format itself.
+
+    part     = <n>          index into g_Parts in src/parts.c
+    when     = <expr>       how to tell this scene is the running one
+    verified = yes | no     measured against the running demo, or inferred
+    note     = <text>       one line, shown with the reading
+    <label>  = <symbol|0xaddr> <b|w|l> [signed] [-> <stats field>]
+
+<label> is what the reading is called in the reply. The "-> <field>" is
+the name the same quantity goes by in that part's stats() line in src/,
+which is what makes a reading comparable against our port without a
+human translating the two vocabularies.
+
+verified SAYS WHETHER ANYONE HAS ACTUALLY WATCHED IT. A row that is a
+reasonable inference from the code and a row that was measured live look
+identical once they are both in a table, and the inferred one gets quoted
+as fact by the next reader - so it is declared, and amiga_fingerprint
+prints a warning beside every unverified reading rather than letting it
+pass as measurement.
+
+SIGNEDNESS IS NOT OPTIONAL. The demo's camera and vertex globals are
+signed, and a camera x of -0x100 read unsigned is 0xffffff00 - which is
+not a near miss, it is a number that matches nothing and looks like the
+global was the wrong one.
+
+
+.selector g_SceneMode       = g_SceneMode w
+.selector g_SpaceModulePart = g_SpaceModulePart l
+.selector g_pTempleCells    = g_pTempleCells l
+.selector g_TempleMode      = g_TempleMode l
+
+NEITHER TERM IS SUFFICIENT ALONE, AND THEY FAIL IN OPPOSITE
+DIRECTIONS. The pointer is zero only before shot 1 has ever run; the
+mode is zero both in the ruins and in a CODE_06 that has never been
+written.
+
+TempleModule_Run 0x003678d0 takes a mode in D0, stores it to
+g_TempleMode, calls Temple_Init() and only then dispatches: mode 0 is
+the ruins, 2.14, and mode 1 is 0x0036822e, which is 2.15 and 2.16. Both
+modes share an epilogue that calls Temple_Free(). So:
+
+  g_TempleMode SEPARATES MODE 0 FROM MODE 1, which is its job, and it
+  does NOT say whether the temple module has ever run. Before it has,
+  the slot holds the file's own zero - which is the same value mode 0
+  writes, so a bare "g_TempleMode == 0" matches the window scene too.
+
+  g_pTempleCells SAYS SHOT 1 OF MODE 0 HAS RUN, and once it has, it
+  never stops saying so. THE MODULE HAS TWO SUB-BLOCK GROUPS and the
+  one this global belongs to is not the obvious one: it is slot 1 of the
+  shot-1 group (g_TempleShot1BufferCount, sizes at
+  g_TempleShot1BufferSizes), which Temple_LoadShot1Assets 0x0036d1c2
+  cuts - NOT of the group Temple_Init allocates for both modes
+  (g_TempleBufferCount). Both groups are tabulated slot by slot in
+  docs/effects/temple.txt section 4.
+
+  So the false positive is STALENESS, not re-allocation: mode 1 never
+  allocates this group at all. Mem_FreeSubBlocks 0x0021fdb4 re-sums the
+  list, frees slot 0 and WRITES NOTHING BACK, and nothing in
+  Temple_Init or Temple_Free clears the slot table. Mode 0 runs before
+  mode 1 in the demo timeline, so from the end of shot 1 the slot holds
+  a dangling pointer, through 2.15 and on to 2.20.
+
+  BOTH SLOT TABLES ARE FILE-RESIDENT IN CODE_06, not BSS, and the file
+  has every slot of both groups as zero (0x0037469c..0x003746c0 at file
+  0x1523d0, verified). So a zero reads as "shot 1 has not run yet in
+  this run" rather than "a BSS hole that happens to be clear", which a
+  BSS-backed table could not promise.
+
+Measured across two states:
+
+    global             image       state 4 (window)  state 5 (ruins)
+    g_TempleMode       0x00372b26  0                 0
+    g_pTempleCells     0x003746a0  0                 0x0070ee38
+    g_pTempleLogTable  0x00374764  0                 0x00782008
+    g_TempleCamTime    0x00372ae6  0                 0x0000132c
+
+THAT TABLE DOES NOT PROVE THE POINTER IS SUFFICIENT. Both states are
+mode 0, so it carries one distinction and not two: it shows the pointer
+is NECESSARY and says nothing about whether it is enough. A column that
+separates every sample available looks the same either way.
+
+So the conjunction, with both terms load-bearing: the pointer rejects
+everything before the module first runs, and the mode rejects mode 1 and
+everything after it.
+
+A WRONG SLIDE READS AS ZEROS, AND ZEROS ARE A CONFIDENT ANSWER HERE.
+The selectors live in hunks whose slide is derived, so a derivation that
+came back wrong would read plausible zeros out of the wrong addresses -
+and "g_pTempleCells == 0" is exactly how "not the ruins" looks. That is
+why symbols.py refuses to report a slide unless two independent anchors
+agree, and why amiga_fingerprint warns when EVERY selector reads zero:
+one scene legitimately having all-zero selectors and a bad slide are
+indistinguishable from the values alone, so the suspicious case is
+flagged rather than resolved.
+
+The selectors are read whenever a fingerprint is taken without being
+told which scene it is, and reported raw. THEY ARE REPORTED AND NOT
+INTERPRETED: nobody has yet written down which value of g_SceneMode
+means which part, so turning one into a scene name would be a guess, and
+a guessed scene name is worse than three raw numbers - it sends the
+reader to the wrong row. Fill in the "when" lines as the mapping becomes
+known and this stops being manual.
+
+
+THE RUINS
+---------
+.fingerprint temple
+    part     = 14
+    when     = g_pTempleCells != 0 && g_TempleMode == 0
+    verified = yes
+    note     = pair on camX+camZ+heading together; the clock lies
+
+    camX     = g_TempleCamX l signed  -> cam[0]
+    camY     = g_TempleCamY w signed  -> cam[1]
+    camZ     = g_TempleCamZ l signed  -> cam[2]
+    heading  = g_TempleHeading l signed  -> heading
+    horizon  = g_TempleHorizon w signed  -> horizon
+    camTime  = g_TempleCamTime l  -> key
+    countdown = 0x372b36 l
+    heading2 = 0x372b60 l signed
+.end
+
+DO NOT BOUND A DEMO-SIDE RISK WITH src/parts.c. PART_Temple being last
+in PARTS[] bounds nothing about the demo: PARTS[] is how far THE
+RECONSTRUCTION has got, and docs/parts.txt section 2 carries 2.15 THE
+TEMPLE RISES through 2.22 THE END, eight scenes past the ruins.
+amiga_fingerprint reads the DEMO, so each of those is reachable and all
+of them inherit the dangling pointers. Anything in src/ bounds only our
+port.
+
+OUR TICK T-2 IS THE DEMO'S TICK T. That offset is measured, not
+derived, and it is what "the camera matches but everything downstream
+is slightly off" means: the two sides are a frame or two apart and both
+looked right.
+
+g_TempleCamX 0x372b4c, g_TempleCamZ 0x372b50 and g_TempleHeading
+0x372b5c were established by reading 0x51199c and 0x5119ac live in a run
+whose CODE_06 slide was 0x19ee50. All eight column-walker prologues read
+them, as does Temple_DrawTerrain 0x0036fbd4. The gap between
+g_TempleHorizon at 0x372b32 and g_TempleCamX suggests more structure
+here than three loose longwords; what is between them is not mapped.
+
+Also measured in this neighbourhood, and listed in the block above
+without being part of the pairing: 0x372b36 is a frame countdown, 0x960
+at the start of a shot and decremented once a frame, and 0x372b60 is a
+second heading whose purpose is not established. Not in the block
+because nothing reads them on our side yet: 0x372b54 and 0x372b58 are a
+shadow pair, and 0x372b2a is an extra light term, 0 throughout shot 1.
+None of these five are named in Ghidra.
+
+camTime is listed for context only - see the warning at the top of this
+file. It is g_TempleCamTime, our g_camTime, and our stats() prints it as
+"key <hi>.<lo>" with the low byte in hex.
+
+
+.fingerprint temple_mode1
+    when     = g_pTempleCells != 0 && g_TempleMode == 1
+    verified = yes
+    note     = 2.15/2.16; identified but not reconstructed, so no fields
+.end
+
+Slot 0 of that second group, 0x0037469c, is labelled
+g_pTempleRayTable, and Temple_BuildRayTable 0x0036d544 does read it as
+the ray table - so the name may be exactly right, with the ray table
+simply being what lands in slot 0. Saying which slot holds what needs a
+read of Temple_LoadShot1Assets, which nobody has done, so nothing here
+is renamed on the strength of it.
+
+
+A BLOCK WITH NO FIELDS IS WORTH HAVING. The selector pair is solid, and
+what 0x0036822e actually draws is unread - so this names the scene
+correctly and reads nothing, which beats letting the mode-0 block
+swallow it. Temple_InitMode1 0x0036a0a2 loads Fplasma as a single
+0x40000 part. Fields go in when somebody reads the scene.
+
+
+THE CAPTAIN AT THE WINDOW
+-------------------------
+Two scenes in one part, and they do not share a fingerprint: the pull-
+back is identified by how far it has pulled back, and the scene after it
+by where the camera is.
+
+.fingerprint window_pullback
+    part     = 6
+    when     = g_SceneMode == 4
+    verified = yes
+    note     = our stats prints pull >> 2; shift the demo value to compare
+
+    pullPos  = g_PullBackPos l signed  -> pull
+    pullScaled = 0x2e0bda l signed
+    pullVel  = 0x2e0be2 l signed
+.end
+
+OUR stats() PRINTS g_pull_pos >> 2 AND THE DEMO'S GLOBAL IS UNSHIFTED,
+so the two numbers differ by a factor of four and neither is wrong.
+Shift the demo value right two before comparing. 0x2e0bda next door may
+already be that shifted value - the name here is a guess at its purpose,
+nobody has checked, and it is listed rather than claimed.
+
+.fingerprint window_cam
+    part     = 6
+    when     = g_SceneMode == 5
+    verified = yes
+    note     = camera alone is NOT unique for ticks 0-152; use pullPos too
+
+    camX     = g_CamX l signed  -> cam[0]
+    camY     = g_CamY l signed  -> cam[1]
+    camZ     = g_CamZ l signed  -> cam[2]
+    pullPos  = g_PullBackPos l signed  -> pull
+    cursor   = g_CamPathCursor l  -> key
+.end
+
+THE CURSOR WALKS TWO A TICK from zero at the handover into mode 5, so a
+demo cursor of 36 is 18 ticks past it - not 36. Our stats() prints the
+cursor as "key <hi>.<lo>"; the demo's is a raw count.
+
+PAIR ON THE CAMERA, NOT THE CURSOR - the cursor LEADS it. g_CamPathCursor
+is written once per VBL, before the frame that uses the previous value,
+so a halt reading cursor 90 holds the camera our tick at cursor 88
+produces [verified, on hardware: cam -445,-2142,662 is our tick 198,
+key 0.88]. Earlier in the same shot the gap is three ticks - cursor 16
+says tick 162, camera -354,-1733,686 says 159 - and scoring the frames
+agrees with the camera. The cursor row stays because it seeks to the
+neighbourhood in one read; it is not the key.
+
+Our window stats() line is
+    pull <n>/<end> snap <n> | key <h>.<lo> cam <x>,<y>,<z> yaw <n>
+    pit <n> hd <n> | ship <n>
+so "pull" and "cam" above line up with it directly. yaw, pitch and head
+have no row yet because no demo global has been paired with them -
+though there are strong candidates next door that nobody has paired
+against them: g_CameraYaw 0x002e0b32, g_CameraPitch 0x002e0b36,
+g_CameraHeading 0x002e0b5e, with latched variants at 0x002e0ad0,
+0x002e0b2a and 0x002e0b2e, and g_CameraAngle/g_CameraAngle2 at
+0x002e0ad8/0adc. Also unpaired: g_CamPathKeys 0x002e0c86, g_pCamPath
+0x002e482c, g_pCamPath12 0x002e4830, g_OrbCamPath 0x002eea14, and
+g_CamTrackOffsetZ/X at 0x002e0b4a/0b4e.
+
+
+THE SPACE SCENES - DELIBERATELY NOT A BLOCK
+------------------------------------------
+The space-family parts PLAUSIBLY reuse g_CamX/g_CamY/g_CamZ and
+g_CamPathCursor, since they share the camera code the window scene uses.
+THAT IS INFERENCE AND NOT MEASUREMENT, so there is deliberately no
+block for it here. A block would be read as fact by whoever comes
+next, and the cost of a wrong fingerprint is every measurement taken
+against it. An unverified block would at least be labelled, but the
+honest state of this one is "nobody has looked", which is not a row.
+
+What would settle it: pick one space part, halt in it, read g_CamX/Y/Z
+and g_CamPathCursor, and check they move the way that scene's camera
+visibly does. Then write the block with verified = yes.
+
+Which parts are "space scenes" is not established either. Approach,
+Portal and Underside all run under maybe_Space_RunPlanetScenes
+0x002cd102, so they are candidates, but candidate is not the same as
+verified and this file does not guess.
+
+
+WHAT EACH PART'S stats() ACTUALLY PRINTS
+----------------------------------------
+Surveyed across src/part_*.c. Five parts print a camera or a path
+cursor, seven print only derived values, and one has no stats() at all:
+
+  Prints a camera or a path cursor, so a fingerprint can pair on it:
+      temple, window, orb, release, underside
+
+  Prints only derived values - no camera, no cursor:
+      approach  glow, sun, rock radii
+      earth     depth, thresh, orb
+      explosion level, rings, phase
+      logo      field min..max, mean, variant
+      portal    range, phase, flash, sparks, yaw
+      sand      level, delay, fade, phase
+      sun       sun and planet positions, cells
+
+  Has no stats() at all:
+      term (part 0)
+
+ORB, RELEASE AND UNDERSIDE ARE THE CHEAP ONES. Our side already prints
+something a fingerprint could pair on, so each needs only its demo-side
+global found and a block written - no change to src/ at all.
+
+FOR THE SEVEN DERIVED-ONLY PARTS, ADDING A stats() FIELD IS ONLY HALF
+THE JOB, and doing it first is the wrong order. There is no demo-side
+global paired with them either, so a new field would have nothing to be
+compared against - and a stats() line printing a number with no
+counterpart reads as progress while adding none. Find the demo global
+first; the field it needs follows from whatever that global turns out
+to be.
+
+
+STILL MISSING
+-------------
+No block at all for: Terminal (0), Sun (1), Logo (2), Approach (3),
+Portal (4), Logo2 (5), Logo3 (7), Orb (8), Underside (9),
+Explosion (10), Release (11), Earth (12), Sand (13).
+
+A part with no block is not a failure of this file, it is work not done -
+and amiga_fingerprint says exactly that rather than returning nothing, so
+the gap is visible at the moment it matters instead of being discovered
+later. Each one needs: which globals the part reads to place its camera,
+their image addresses, their size and signedness, and the field in that
+part's stats() line that holds the same quantity.
+
+Per-scene counters that look like candidates and that nobody has paired
+against anything yet: g_SceneFuseTicks 0x002e0a92, g_SceneMode
+0x002e0bf6, g_SceneObjectCount 0x002e0afe, g_SpaceModulePart
+0x002e0af8, g_PortalPhase 0x002e0c10, g_OrbDriftPhase 0x002e0c44,
+g_OrbDepth 0x002e0c4c, g_SandLevel 0x00313ed4, g_SandLevelDelay
+0x00313ddc.
+
+EVERY ONE OF THOSE IS A COUNTER, and the warning at the top of this file
+applies to all of them: a counter alone pairs two timelines that may not
+be advancing together. Prefer a position. Use a counter as the
+discriminator when a position turns out not to be unique, which is
+exactly what g_PullBackPos does for the window scene.

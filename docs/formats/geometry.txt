@@ -1,0 +1,1044 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                         THE 3D OBJECT FORMAT
+
+
+Abstract
+
+   RELIC stores 3D objects as three sub-blocks per object inside an
+   asset chunk: a face array, a two-byte face count, and a vertex
+   array. The sub-block sizes live in the executable, not in the file,
+   so the structure is recoverable statically.
+
+   The format is read and checked against all 21 objects and all 582
+   faces of Fspacedata, which parse with no residue [verified].
+
+   Every face is a triangle and carries NO texture coordinate. What it
+   does carry is a MODE WORD that chooses the rasteriser and decides
+   whether the winding is tested - section 3.1.
+
+Table of Contents
+
+   1. How an object is carved out of a chunk
+   2. The vertex block
+   3. The face block
+      3.1. The mode word, and why nothing is backface-culled
+      3.2. The horizontal gradient is per triangle
+      3.3. The face sort reorders the records, and the UV tables follow
+   4. What the format does NOT contain
+   5. The objects in Fspacedata
+   6. The ship, assembled
+      6.1. What the reconstruction draws
+   7. Reading it
+   8. Open questions
+
+1.  How an object is carved out of a chunk
+
+   Dat_LoadSplit (0x0021fa94) loads a chunk and walks a size table,
+   handing out a pointer per entry - formats/relic_dat.txt section 4.
+   For a geometry chunk the entries come in threes:
+
+    entry   what                       size
+    -----   ------------------------   ----------------------------
+    3n+0    Face[nfaces]               nfaces * 14
+    3n+1    u16 nfaces - 1             always 2
+    3n+2    u32 nverts-1; Vertex[]     4 + nverts * 12
+
+   BOTH COUNTS ARE STORED MINUS ONE because the code loops with dbf,
+   which runs its operand plus one times. nfaces = word + 1 and
+   nverts = longword + 1. Reading either count literally gives an
+   object one face and one vertex short, which still renders, so this
+   is a mistake that looks like success.
+
+   The two-byte face count gets a sub-block of its own rather than
+   sitting in a header, which is why the size table has that
+   conspicuous run of 2s. It means the renderer holds a direct pointer
+   to the count instead of indexing a header.
+
+   For Fspacedata the table is 67 entries at g_SpaceDataSizes
+   (0x002e483c): 21 complete triples, then a 4-entry tail that is not
+   geometry. The 67 sizes sum to 48,606, exactly the chunk length
+   [verified].
+
+   THE TAIL IS TWO CAMERA PATHS AND A FLAT FILL [verified]:
+
+    slot   size    chunk offset   what
+    ----   -----   ------------   ------------------------------------
+      63     480         0x35fa   g_pCamPath, 40 keys of 12
+      64     516         0x37da   g_pCamPath12, 43 entries of 12
+      65   32768         0x39de   g_pFlatPattern
+      66    1024         0x41de   g_pFlatPalette
+
+   A CAMERA PATH IS THE SAME SHAPE AS A VERTEX ARRAY - three
+   big-endian longwords an entry - which is why it sits in a geometry
+   chunk without needing a format of its own. It is NOT in 16.16
+   though: the values are whole units, a few thousand across.
+   effects/orb_underside.txt 3.
+
+2.  The vertex block
+
+   +--------+------+------+------------+---------------------------------+
+   | Offset | Size | Type | Confidence | Notes                           |
+   +========+======+======+============+=================================+
+   | +0x00  |    4 | u32  | verified   | nverts - 1                      |
+   +--------+------+------+------------+---------------------------------+
+   | +0x04  |   12 | Vert | verified   | first vertex; 12 bytes each     |
+   +--------+------+------+------------+---------------------------------+
+
+   A vertex is three big-endian signed longwords in 16.16 FIXED POINT
+   [verified]. Dividing by 65536 gives object-space units; the objects
+   in Fspacedata run from 0.014 to 17.4 units across, so they are
+   modelled at roughly unit scale.
+
+   THE SECOND COMPONENT IS THE FORWARD AXIS, NOT THE THIRD. This
+   document calls them comp0, comp1 and comp2 rather than x, y and z,
+   because Scene_TransformProject (0x002d2cd4) divides by the SECOND
+   and adds the screen centres to the first and third:
+
+    comp0   ->  screen X      + 0x50 = 80, half of 160
+    comp1   ->  DEPTH         the perspective divisor
+    comp2   ->  screen Y      + 0x32 = 50, half of 100
+
+   Calling comp1 "y" and comp2 "z" is the usual reflex and it
+   transposes every texture projection in section 4. The Uv_Proj*
+   routines are named by component in the database for the same
+   reason.
+
+   The 80 and 50 are also a third independent confirmation that the
+   framebuffer is 160 x 100 - subsystems/renderer.txt.
+
+   The giveaway is the constants. The first object to decode by hand,
+   object 5, has x values of 0x00003333 and 0xffffcccc - 13107 and
+   -13108, which are +0.2 and -0.2 in 16.16 to within one count.
+
+   Example, object 11, a flat rectangular panel - four vertices that
+   differ only in comp2, which is what a panel looks like:
+
+    v0  -0.12012  -0.41193  +0.18960
+    v1  -0.05118  -0.42611  +0.18960
+    v2  -0.12012  -0.41193  +0.14566
+    v3  -0.05118  -0.42611  +0.14566
+
+3.  The face block
+
+   A face is 14 bytes: a word, then three pairs of vertex indices.
+
+   +--------+------+------+------------+---------------------------------+
+   | Offset | Size | Type | Confidence | Notes                           |
+   +========+======+======+============+=================================+
+   | +0x00  |    2 | u16  | verified   | FACE MODE, not a vertex count.  |
+   |        |      |      |            | 1 flat, 2 textured and not      |
+   |        |      |      |            | backface culled, anything else  |
+   |        |      |      |            | textured and culled. 2 in all   |
+   |        |      |      |            | 582 faces of Fspacedata         |
+   +--------+------+------+------------+---------------------------------+
+   | +0x02  |    4 | u16  | verified   | edge 0: (a, b)                  |
+   |        |      | x 2  |            |                                 |
+   +--------+------+------+------------+---------------------------------+
+   | +0x06  |    4 | u16  | verified   | edge 1: (b, c)                  |
+   |        |      | x 2  |            |                                 |
+   +--------+------+------+------------+---------------------------------+
+   | +0x0a  |    4 | u16  | verified   | edge 2: (c, a)                  |
+   |        |      | x 2  |            |                                 |
+   +--------+------+------+------------+---------------------------------+
+
+   THE THREE PAIRS ARE A CLOSED EDGE RING, not three independent
+   indices. Each pair is (from, to), the second of one pair is the
+   first of the next, and the last closes back to the first. All 582
+   faces in Fspacedata close [verified]. The triangle's corners are
+   edge[0][0], edge[1][0] and edge[2][0].
+
+   Storing the ring costs three redundant words per face, and the
+   renderer does not use them - see below. Whether another tool in
+   the group's pipeline consumed edges, or whether the format simply
+   carries more than this demo needs, is unknown.
+
+   THE WORD AT +0x00 IS A FACE MODE, AND IT IS WRITABLE [verified].
+   Poly_DrawFaceList (0x002d18f8) branches on it: 1 selects a flat,
+   untextured rasteriser; 2 selects the textured one and SKIPS the
+   backface test; any other value selects the textured one with
+   culling. It is not a vertex count, and nothing in the format sets
+   the number of vertices - the renderer always reads exactly three.
+
+   Uv_GenerateFaceParams writes 0 into it at the top of every face,
+   so the value in the file is only an authored starting point and
+   the live value is whatever the last pass left. All 582 faces of
+   Fspacedata hold 2 on disk.
+
+   THE RENDERER READS ONLY THREE OF THE SEVEN WORDS. Poly_DrawFaceList
+   takes the vertex indices from +0x2, +0x6 and +0xa, which are the
+   FIRST word of each edge pair. The three "to" words are never read.
+   So the edge ring is redundant to this renderer, and a
+   reconstruction can treat a face as three indices at those three
+   offsets - while still checking the ring closes, because that is
+   what proves the layout is being read correctly.
+
+3.1.  The mode word, and why nothing is backface-culled
+
+   A face's first word is not a vertex count. Poly_DrawFaceList
+   (0x002d18f8) reads it before anything else and branches
+   [verified]:
+
+       1      Rast_AdditivePoly, and NO backface test
+       2      Rast_TexturedPoly, and NO backface test
+       else   Rast_TexturedPoly after the cross-product test
+
+   ALL 582 FACES OF Fspacedata ARE STORED AS MODE 2 [verified,
+   counted over every object], and the mode-2 branch jumps past both
+   the 0x7fffffff near-plane reject and the cross-product test. Read
+   from the file alone, nothing in the chunk is backface-culled.
+
+   THE FILE IS NOT WHAT RUNS. THE MODE IS REWRITTEN TO 0 AT SETUP.
+   Read out of a paused emulator in the window scene, the first face
+   record of scene slots 0, 1, 2, 3 and 4 all carry mode 0x0000, not
+   2 [observed, on hardware]. Mode 0 is the "anything else" branch,
+   so the ship IS backface-culled and DOES take the near-plane
+   reject, which is what the rendered frames said all along.
+
+   THE CROSS PRODUCT IS TAKEN IN WORDS AND THAT IS LOAD-BEARING.
+   0x002d1968 subtracts the four edge deltas with sub.l, and
+   0x002d1970 then multiplies them with muls.w, which uses only the
+   LOW 16 BITS of each operand. An edge longer than a word wraps
+   into the product instead of overflowing it, and the wrapped
+   answer is the demo's. A port multiplying the full 32-bit
+   differences agrees only while every edge fits a word: let the
+   camera close on the geometry until a vertex projects to six
+   figures - the window scene does - and the s32 product overflows,
+   the sign comes out of the wreckage, and faces the demo culls get
+   drawn. src/ship.c facing() cuts each delta to its low word first.
+
+   THE WRITER IS Uv_GenerateFaceParams, 0x002cf658 [verified]. Per
+   face it stores 0 into the mode word and then dispatches on
+   g_UvModeBits to whichever projectors are wanted, stepping 7 words
+   to the next record. Anything that is given UV parameters is
+   therefore mode 0 by the time it is drawn, and there are 39 call
+   sites: Scene_SetupPart14 x19, Space_BuildObjects x11,
+   Spike_BuildRing x7, Strut_RetextureToTex3 and Mesh_DeformAndMap.
+   Space_BuildObjects and Spike_BuildRing are the vessel's own
+   setup, which is why the whole ship comes out mode 0.
+
+   AN OBJECT THAT NEVER PASSES THROUGH IT KEEPS THE FILE'S 2.
+   Uv_WriteBillboard11 (0x002d1638) and Uv_WriteBillboard20
+   (0x002d1664) write the texture base and six longwords of literal
+   UVs per face WITHOUT touching the mode word. Object 11 - the
+   window decal, two triangles on the hull - reads mode 0x0002 live,
+   its two rings decoding as corners (2,3,1) and (0,2,1), exactly the
+   pair Uv_WriteBillboard11 writes [observed, on hardware]. So the
+   decal is neither culled nor near-plane rejected, and a port that
+   culls unconditionally drops it at any angle its own cross product
+   calls back-facing. src/ship.c exempts XF_BILLBOARD parts for this
+   reason; at the three frames measured below the decal is
+   front-facing anyway, so the exemption changes no score and is
+   there against the angles that are not measured.
+
+   THE OTHER BILLBOARD IS BUILT AND NEVER DRAWN. Uv_WriteBillboard20
+   textures object 20, which Space_BuildObjects puts in scene slot
+   40, and Scene_SortAndDrawAll walks g_SceneObjectCount + 1 slots.
+   Every write of that count in the image is 0x0e, 0x16 or 0x26, and
+   Space_RunPart's increments run 0x16 +3 +9 +3 +1 to 0x26, so slots
+   39 and 40 - objects 19 and 20 - are past the end of every scene
+   the space module reaches [verified, on hardware 1000 frames on
+   with the count still 0x26 at scene mode 0x12]. A
+   reconstruction loses nothing by carrying objects 0 to 18 only,
+   which is what src/ship.c does.
+
+   The three modes, as they stand at DRAW time rather than on disk:
+
+    +------+------------------------+-----------------------------+
+    | mode | set by                 | what the drawer does        |
+    +======+========================+=============================+
+    | 0    | Uv_GenerateFaceParams  | cull, and near-plane reject |
+    | 1    | Mesh_MakeAdditiveEnv.  | additive, no cull           |
+    | 2    | nobody - the file's    | no cull, no near reject     |
+    +------+------------------------+-----------------------------+
+
+   TWO CONSEQUENCES FOLLOW, AND BOTH REVERSE EARLIER READINGS. The
+   reconstruction's cull is not a divergence to be justified by
+   scoring - it is what the demo does. And no face with an
+   unprojectable corner ever reaches Rast_TexturedPoly, because
+   Poly_DrawFaceList rejects it first: three conditional breakpoints
+   on the drawer's entry, one per corner register, took 41,706 hits
+   between them and passed none [verified, on hardware].
+
+   THE REAL DIVERGENCE WAS THE PRECISION OF THE CROSS PRODUCT.
+   Scene_TransformProject's divsl truncates every vertex to one of
+   160 whole columns before Poly_DrawFaceList takes the cross
+   product, so the sign is decided on whole pixels. src/ship.c kept
+   the eight fraction bits it recovers from the remainder and took
+   the sign on those, which differs wherever a face is edge-on by
+   less than a pixel.
+
+   That is small and it is visible. Over cursor 0x02..0x16 - our
+   ticks 155 to 161 - five faces of the hull interior fell on the
+   wrong side of it: parts 1 and 3 faces 54 and 55, two pairs that
+   are the two triangles of a quad, plus part 0 face 11. The camera
+   is INSIDE the structure there, so those faces are the inner wall
+   that should fill the frame, and dropping them left SKY AROUND THE
+   DECAL - the window picture hanging in space with a clean border.
+   At tick 162 the rotation moved them back across the boundary and
+   the hull snapped in, which is what made it read as geometry
+   popping rather than as a cull.
+
+   Scoring against the demo's own buffer, pixels differing by more
+   than 8 in luminance out of 16000:
+
+    +--------------------------+------+------+------+------+------+
+    | reconstruction           | t158 | t159 | t161 | t162 | t198 |
+    +==========================+======+======+======+======+======+
+    | subpixel cross product   |  495 |  453 |  389 |  406 |  467 |
+    | no cull at all           |  449 |  388 |  395 |  499 | 1013 |
+    | whole-pixel cross product|  350 |  304 |  304 |  406 |  467 |
+    +--------------------------+------+------+------+------+------+
+
+   The whole-pixel test is better at the handover and changes
+   nothing at t162 or at t198, where the camera is well outside.
+   Dropping the cull instead helps the handover and doubles the
+   error at distance, because back faces then paint over front ones:
+   the per-object sort is view-dependent but Mesh_SortFacesByC2's
+   face order is fixed at setup, so nothing orders them. src/ship.c
+   therefore culls, on whole pixels.
+
+   CLIPPING TO THE NEAR PLANE INSTEAD OF REJECTING WAS TRIED AND
+   REVERTED. It recovers the faces the camera sits inside of, raising
+   the triangle count at cursor 8 from 153 to 177, and it moved
+   neither score - but a vertex left sitting ON the plane divides by
+   NEAR_CLIP, the most magnifying depth there is, so every straddling
+   face came out smeared across the whole frame with its texture
+   stretched along it. The reject stands, and with the mode reading
+   0 it is what the demo does too.
+
+3.2.  The horizontal gradient is per triangle
+
+   Rast_TexturedPoly computes du and dv ONCE for a triangle, into
+   0x002e0bd2 and 0x002e0bd6, and its per-scanline records carry only
+   the LONG edge's (u, v) - every row then steps across by those same
+   two constants [verified, 0x002cafb6 to 0x002cb01a]. The gradient
+   comes from the knee: t is how far down the long edge the middle
+   vertex sits, the signed width there is
+
+       wx = ((x2 - x0) * t >> 12) - (x1 - x0)
+
+   which is also the term at 0x002cb8bc that picks between the
+   left-to-right and right-to-left span fillers, and du and dv are the
+   matching u and v differences divided by it. A zero wx is the
+   degenerate triangle the routine rejects.
+
+   src/rast.c DOES NOT follow that form, and the reason is a trap
+   worth stating. Written with a plain divide by wx it reproduces the
+   shape of the original and wobbles: wx is a knee width in whole
+   pixels, often under ten, so Du quantises coarsely, and a whole
+   facet's texture shifts at once each time rotation steps wx to the
+   next integer - every triangle wiggling in place like broken glass.
+   The original divides through the reciprocal table at 0x002f111c
+   rather than with a divide, and that table is not transcribed, so
+   there is no faithful version of this to compare against yet.
+
+   Deriving the gradient per row from the two edge endpoints instead
+   quantises per ROW, which is invisible, and scored better on three
+   of the four frames [observed]. That is what src/rast.c does.
+
+   WHOEVER TRANSCRIBES IT PROPERLY: the exact affine gradient is
+
+       Du = ((u2-u0)(y1-y0) - (u1-u0)(y2-y0))
+          / ((x2-x0)(y1-y0) - (x1-x0)(y2-y0))
+
+   which is the original's two steps with the division by (y2-y0)
+   cancelled, and its denominator is twice the triangle's area rather
+   than a knee width - the same number, far less quantised. Note that
+   u and v arrive as 16.16 and a texel difference reaches 159, so a
+   16.16 difference times t overflows a signed 32-bit word four times
+   over; work in whole texels.
+
+3.3.  The face sort reorders the records, and the UV tables follow
+
+   Mesh_SortFacesByC2 does not build a permutation - IT SWAPS WHOLE
+   14-BYTE FACE RECORDS IN PLACE [verified, 0x002d1834]. So after
+   setup the face array in memory is not the chunk's order, and
+   reading an object's faces out of a running demo gives the sorted
+   order while reading them out of relic.dat gives the file's.
+
+   SPACE_BUILDOBJECTS RUNS THE SORT BEFORE EVERY UV WRITER, so a
+   writer that takes its coordinates from a TABLE indexes that table
+   by SORTED POSITION:
+
+    +----------------------+------------------+---------------------+
+    | writer               | coordinates      | order-sensitive?    |
+    +======================+==================+=====================+
+    | Uv_GenerateFaceParams| projected from   | no - each face's    |
+    | Uv_ProjBoxish        | the face's own   | own vertices decide |
+    |                      | vertices         | it                  |
+    +----------------------+------------------+---------------------+
+    | Uv_WriteFlatTable    | one table row,   | no - every face     |
+    |                      | reused           | gets the same row   |
+    +----------------------+------------------+---------------------+
+    | Uv_WriteBillboard11  | a row per face   | YES                 |
+    | Uv_WriteBillboard20  |                  |                     |
+    +----------------------+------------------+---------------------+
+
+   Only the two billboards are exposed, and object 11's sort does
+   swap its two faces: the chunk holds corners (2,3,1) then (0,2,1)
+   and memory holds them the other way round, because corner 0's comp2
+   is 9546 for one and 12426 for the other.
+
+   GETTING THIS WRONG TEARS THE QUAD ALONG ITS DIAGONAL AND NOTHING
+   ELSE. Each triangle still receives a self-consistent triple, so the
+   quad fills and its outline is right; the two just disagree about
+   which end of the shared edge is which, so the texture mirrors
+   across it. Indexing by the chunk's face order instead of the sorted
+   one cost the window scene's handover frames 8 points of mean
+   luminance error apiece [observed].
+
+4.  What the format does NOT contain
+
+   This is the most important section of this document.
+
+   A face is fourteen bytes and all fourteen are accounted for by the
+   mode word and the edge ring. THERE IS NO TEXTURE COORDINATE, NO
+   TEXTURE INDEX, NO MATERIAL, NO COLOUR AND NO NORMAL anywhere in an
+   object [verified by exhaustion - the sizes leave no room].
+
+   THE ANSWER IS THAT THERE IS A SECOND, RUN-TIME STREAM. Poly_
+   DrawFaceList takes a draw context whose field +0x14 points at a
+   per-face parameter stream, and for every face it consumes seven
+   longwords from it in order:
+
+       move.l  (A6)+,g_pTextureBase          the texture to use
+       movem.l (A6)+,{A0,A1,A2,A3,A4,A5}     six gradient values
+
+   28 bytes per face, in face order, no index and no key - the stream
+   is simply walked in step with the face array.
+
+THE SIX VALUES ARE (u,v) FOR THE THREE VERTICES, and they are
+   GENERATED, not stored. Uv_GenerateFaceParams (0x002cf658) fills the
+   stream immediately before each draw by PROJECTING THE OBJECT-SPACE
+   VERTEX POSITIONS. That is why the stored format carries no texture
+   coordinates: the mapping is computed from the geometry itself.
+
+   The generator takes the texture in A1 and a mode mask in D0, plus a
+   centre (D5, D6), a scale (D2), an angle (D7) and a range (D3, D4).
+   It walks the same 14-byte face records and emits 28 bytes per face.
+
+   SEVEN PROJECTIONS, SELECTED BY BIT. They are independent tests
+   rather than a switch, so more than one can run on the same face and
+   the last to write wins. All seven are transcribed in sim/texmap.py.
+
+   +------+----------------------+------------------+-------------------+
+   | Mask | Routine              | u, v from        | Cull              |
+   +======+======================+==================+===================+
+   | 0x01 | Uv_ProjRotated       | comp1, comp0     | none              |
+   |      |                      | rotated by angle |                   |
+   +------+----------------------+------------------+-------------------+
+   | 0x02 | Uv_ProjCylC2         | atan(comp1,      | avg comp2 in      |
+   |      |                      | comp0); comp2    | range             |
+   +------+----------------------+------------------+-------------------+
+   | 0x04 | Uv_ProjCylC1         | comp1; atan(     | avg comp0 in      |
+   |      |                      | comp0, comp2)/2  | range             |
+   +------+----------------------+------------------+-------------------+
+   | 0x08 | Uv_ProjPlanarC1C2    | comp1, comp2     | comp1 spread      |
+   +------+----------------------+------------------+-------------------+
+   | 0x10 | Uv_ProjPlanarC1C0    | comp1, comp0     | none              |
+   +------+----------------------+------------------+-------------------+
+   | 0x20 | Uv_ProjPlanarC0C2    | comp0, comp2     | comp0 spread      |
+   +------+----------------------+------------------+-------------------+
+   | 0x40 | Uv_ProjRotatedRanged | as 0x01          | avg comp2 in      |
+   |      |                      |                  | range             |
+   +------+----------------------+------------------+-------------------+
+
+   Mode 0x4000 on its own takes a shortcut that writes the texture and
+   six zeros. Bit 0x8000 changes how Uv_AtanLookup scales its result.
+
+   THE TWO FAMILIES SCALE AND CENTRE DIFFERENTLY, and it is the
+   easiest thing here to get backwards:
+
+    rotated    u = ((v * g_UvScale) >> 16) + g_UvCentreU
+               centre ADDED AFTER scaling, one shared scale
+    planar     u = (((v >> 8) - g_UvCentreU) * g_UvPlaneScaleU) >> 8
+               centre SUBTRACTED BEFORE scaling, separate u and v
+               scales at 0x2e0c3c and 0x2e0c40
+
+   Scene_SetupPart14 (0x002d0146) passes NEGATIVE centres - -0x302 and
+   -0x168 - with plane scales of 0x2b, which only makes sense with the
+   subtract.
+
+   THE SPREAD CULL is |comp[v1]-comp[v0]| + |comp[v2]-comp[v0]|
+   compared against 0x3e8: a face too flat along that axis is dropped
+   rather than smeared across the texture.
+
+   UV_PROJCYLC1 HAS TWO ODDITIES, both transcribed as written. Its
+   angle is halved, so the texture wraps twice around instead of once;
+   and it culls on the average of comp0 while taking its depth from
+   comp1, where every other ranged projection culls on the axis it
+   measures. Whether the second is a cheap extent test or a slip in
+   the original cannot be told from the code.
+
+   A REJECTED FACE DOES NOT CLEAR ITS SLOT. The routine advances the
+   write pointer by 28 and writes nothing, so last frame's texture and
+   coordinates stay there. Whether anything downstream notices depends
+   on the face mode word, which Uv_GenerateFaceParams has already
+   zeroed - section 3.
+
+   THE ANGULAR PROJECTIONS USE A 256 x 256 ATAN TABLE at g_AtanTable
+   (0x002af97a), 128 KB of words in CODE_00, indexed by packing the
+   two components into one word - the same byte-merge trick the
+   texture mapper uses. So even a cylindrical wrap costs no divide.
+
+   THE EARLIER GUESS IN THIS DOCUMENT WAS RIGHT. It said a disc needs
+   no stored UVs if the mapping is planar, with u and v coming from
+   object-space x and y, and recorded that as a thing to check. That
+   is Uv_ProjRotatedXY, bit 0.
+
+   A rejected face advances the write pointer by 28 without writing,
+   leaving a stale slot. The generator also zeroes the face mode word
+   at the top of every face, so that word is RUNTIME STATE rather
+   than fixed data - section 3.
+
+5.  The objects in Fspacedata
+
+   Shapes are from this project's own render, so they are [observed]
+   in the weak sense of "we drew the vertices and looked": the
+   topology is the demo's, the picture is ours. Identifications are
+   [guess] and are here to say where to start.
+
+    obj  faces  verts  extent c0,c1,c2        shape, and a guess
+    ---  -----  -----  --------------------   ---------------------------
+      0     48     33   2.680  2.680  0.472   16-sided disc - ship hull
+      1     32     24   0.801  0.801  0.535   faceted lump - asteroid?
+      2     56     40   2.680  2.680  0.302   disc with a hole - ship rim
+      3     80     48   0.872  0.872  0.182   smaller holed disc
+      4     24     17   0.248  0.248  0.188   faceted drum - hub?
+      5      3      4   0.400  0.389  1.154   long thin wedge
+      6      3      4   0.437  0.368  1.154   long thin wedge
+      7      3      4   0.437  0.368  1.154   long thin wedge
+      8      8      8   0.266  0.165  0.296   small box-ish
+      9      8      8   0.029  0.296  0.296   small box-ish
+     10      8      8   0.266  0.165  0.296   small box-ish
+     11      2      4   0.069  0.014  0.044   flat quad
+     12     24     16   0.190  0.302  0.351   bent strut
+     13     24     16   0.341  0.081  0.351   bent strut
+     14     24     16   0.190  0.302  0.351   bent strut
+     15     24     16   0.190  0.302  0.351   bent strut
+     16     24     16   0.341  0.081  0.351   bent strut
+     17     24     16   0.190  0.302  0.351   bent strut
+     18      3      4   0.342  0.053  0.042   sliver
+     19    158    156  17.359 10.897  9.398   large assembly - the biggest
+     20      2      4   1.889  0.000  1.292   flat quad, y extent exactly 0
+
+   OBJECT 20 HAS A ZERO Y EXTENT, so it is a plane, not a solid. A
+   four-vertex axis-aligned plane is what a billboard or a backdrop
+   quad looks like, which fits the planet and the starfield being
+   sprites rather than geometry.
+
+   The six near-identical struts at 12 to 17 and the three at 5 to 7
+   and 8 to 10 are repeated parts, which is consistent with a
+   rotationally symmetric ship assembled from instanced pieces. Where
+   the per-instance transforms live is not known.
+
+6.  The ship, assembled
+
+   Space_BuildObjects (0x002d0990) fills TWENTY-ONE scene slots with
+   Fspacedata objects - every object the chunk holds - plus fifteen
+   more slots of sprites, lines and particles. It binds the ship
+   textures, but object 19 alone is six times the size of any ship
+   part, so it builds the scene around the vessel as well as the
+   vessel.
+
+   FOUR DIFFERENT ROUTINES SUPPLY TEXTURE COORDINATES. Only the first
+   is the bit-selected family of section 4.
+
+   +----------+----------------------+-----------------------------------+
+   | Objects  | Routine              | What it does                      |
+   +==========+======================+===================================+
+   | 0,2,1,3, | Uv_GenerateFaceParams| the seven bit-selected            |
+   | 4,8,9,   |                      | projections                       |
+   | 10,18    |                      |                                   |
+   +----------+----------------------+-----------------------------------+
+   | 12..17   | Mesh_DeformAndMap    | deforms a rest pose, then calls   |
+   |          |                      | the above with fixed parameters   |
+   +----------+----------------------+-----------------------------------+
+   | 5,6,7    | Uv_WriteFlatTable    | FACE MODE 1 - a TRANSLUCENT fill, |
+   |          |                      | subsystems/effects.txt section 6  |
+   +----------+----------------------+-----------------------------------+
+   | 19       | Uv_ProjBoxish        | an eighth projection, its own     |
+   +----------+----------------------+-----------------------------------+
+   | 11,20    | Uv_WriteBillboard*   | literal UVs, runtime texture      |
+   +----------+----------------------+-----------------------------------+
+
+   The bit-selected parts, every field read off the setup code:
+
+    slot  obj  tex    mode  scale   cu   cv   angle    rmin    rmax
+    ----  ---  ---  ------  -----  ---  ---  ------  ------  ------
+       0    0    1    0001     94  128  128       0       -       -
+       1    2    0    0001     94  128  128    -700       -       -
+       2    1    3    8002    126  128  128    -700  -29062    8192
+       3    3    2    0002    128  192   64       0    8960   13568
+       4    4    2    8002    128  192   64       0   17230   29453
+       5    8    0    4000    128  192   64       0       -       -
+       6    9    0    4000    128  192   64       0       -       -
+       7   10    0    4000    128  192   64       0       -       -
+      15   18    2    0001    100  192   64       0       -       -
+    9..14 12-17   2    0001    150  192   64       0       -       -
+
+   OBJECTS 3 AND 4 ARE CALLED TWICE AND THE CALLS LAYER - the second
+   does NOT replace the first. A projection that rejects a face does
+   `adda.l #0x1c,A5 ; rts`, advancing the write pointer without
+   writing, so the face keeps what the earlier call gave it. Both
+   objects get a mode-1 base coat over every face and then a cylinder
+   pass that only rewrites the band inside its range:
+
+    obj  call  mode    scale   rmin    rmax   faces written
+    ---  ----  ------  -----  ------  ------  -------------
+      3     4  0001      145       -       -   all 80
+      3     5  0002      128    8960   13568   32
+      4     6  0001      150       -       -   all 24
+      4     7  8002      128   17230   29453   16
+
+   Keeping only the second call leaves 48 of object 3's faces and 8
+   of object 4's with no coordinates at all - a flat untextured disc
+   inside a textured rim.
+
+   Mode 4000 writes the texture pointer and six zero longwords, so
+   objects 8, 9 and 10 sample texel (0,0) and come out one flat
+   colour. That is the demo's own result, not a gap in ours.
+
+   THE SAUCER IS OBJECTS 0 AND 2; THE FLARED CANOPY IS 1, 3 AND 4;
+   THE SIX STRUTS ARE 12 TO 17. The cylinder projections wrap the
+   canopy and the range bounds slice it into stacked bands, which is
+   why those parts cull most of their faces - object 3 keeps 32 of 80.
+
+   ALL SIX STRUTS ARE ONE MESH. Every strut slot points its rest
+   pointer (+0x8) at g_pStrutRestVerts, which is OBJECT 13's vertex
+   block. Fspacedata holds six distinct strut meshes, each already
+   placed around the hub, and the demo reads only object 13's and
+   rotates it into place six times.
+
+   THE OTHER FIVE ARE NOT DEAD. Mesh_DeformAndMap points the working
+   pointer at the object's OWN block (+0x38) across Obj_SetCentroid
+   alone, so each instance takes its draw-order centroid from its own
+   pre-placed mesh and its geometry from object 13's. The five extra
+   meshes exist to give the depth sort six correct world positions.
+
+   BENDING EACH OBJECT'S OWN VERTICES PLACES THEM TWICE. The file
+   meshes already carry a hub placement, so applying the placement
+   angle on top puts the six at unrelated angles - six struts in six
+   different poses instead of one shape repeated at 60 degree steps.
+
+   THE STRUTS CHANGE TEXTURE PARTWAY THROUGH THE PART.
+   Strut_RetextureToTex3 (0x002cf550) re-runs Uv_GenerateFaceParams
+   over all six with EVERY PARAMETER Mesh_DeformAndMap already used -
+   mode 1, scale 0x96, centre (0xc0, 0x40), mapped from the rest
+   pose - and only the texture different, ship texture 3 instead of
+   2. Space_RunPart calls it once, right after the scene object
+   count reaches its final 0x26 and two instructions before
+   Strut_ResetClaw. So the claw changes colour and starts moving at
+   the same moment.
+
+   THE SIX STRUTS ARE AN ANIMATED CLAW. Two routines bend them
+   through the same Mesh_BendChain, anchored at vertices 0, 4 and 8,
+   each pass turning EVERY vertex downstream of its anchor so the
+   three compound into an articulated arm. The struts have 16
+   vertices and the joints split them into three segments.
+
+   WHICH ROUTINE IS DRIVING DECIDES THE SHAPE, and they do not agree:
+
+   +---------------------+----------------------------------------+
+   | Mesh_DeformAndMap   | once, at setup. Joint angles hardcoded |
+   | 0x002cf59c          | 0x700, 0x1c80, 0x1a80. Also the only   |
+   |                     | routine that generates the UVs.        |
+   +---------------------+----------------------------------------+
+   | Mesh_AnimateStruts  | EVERY FRAME. Re-reads the angles from  |
+   | 0x002cffea          | g_ClawJoint0/1/2 and never touches UVs |
+   +---------------------+----------------------------------------+
+
+   MESH_ANIMATESTRUTS RE-COPIES THE REST POSE BEFORE EVERY BEND. That
+   is why the joint angles are absolute and never accumulate, and it
+   means the animation OVERWRITES the setup pose rather than
+   compounding with it. Bending the already-bent vertices drifts.
+
+   Strut_ResetClaw (0x002cca5a) writes zero to all three joints and
+   re-poses, and zero is the STRAIGHT pose. Space_RunPart calls it
+   partway through the space timeline, so the setup pose is what is
+   on screen until then and nothing like it afterwards: the setup
+   angles are far outside the -988..+562 the animation ever reaches.
+
+   Strut_AnimateClaw (0x002d643c) is the script - subsystems/
+   effects.txt section 7 for how it is cued:
+
+       CLOSE   joints -= (2, 4, 2) until joint 0 reaches -0x1ee
+               247 frames, about 5 seconds at PAL
+       hold    until the caller passes a non-zero cue
+       OPEN    each joint gains its own velocity, which gains 2 a
+               frame, until joint 0 reaches 0x200 - about 33 frames
+
+   THE OPEN PHASE ACCELERATES, so the claw eases in and snaps. All
+   three velocities are identical, so it adds the same delta to all
+   three joints. The three poses are straight (0,0,0), closed
+   (-494,-988,-494) and open (+562,+68,+562).
+
+   THE ANGLE IS MIRRORED BEFORE USE. Mesh_RotateAboutAnchor does
+   eori.l #0x1fff, so 0x700 is a turn of 6399 of 8192 steps - about
+   -78.8 degrees - not the +31.5 the immediate reads as. Taking the
+   immediates at face value bends every strut the wrong way. The
+   three effective bends are -78.8, +39.3 and +61.8 degrees, and the
+   rotation is in the comp0/comp2 plane with comp1 untouched.
+
+   ALL THREE ANGLES ARE IMMEDIATES, so this is a pose rather than a
+   time animation; the same call produces the same shape. What varies
+   per strut is only the placement angle Space_BuildObjects passes:
+   0, 1365, 2730, 4095, 5460 and 6825 of 8192 - EXACTLY 60 DEGREES
+   APART, a six-armed hub.
+
+   THE TEXTURE COORDINATES COME FROM THE REST POSE. The vertex
+   pointer is swapped to +0x8 across the Uv_GenerateFaceParams call
+   and restored after, so the mapping is computed on the straight
+   chain and carried onto the bent geometry. Mapping the bent
+   vertices instead gives different UVs.
+
+   sim/texmap.py carries the script as strut_anim_angles() and
+   sim/run.py scrubs it with the . and , keys.
+
+   OBJECT 18 IS A MASTER, NOT A ONE-OFF. It is a thin flat spike
+   lying in the comp1 = 0 plane and pointing radially out along
+   comp0, and Spike_BuildRing (0x002d12ac) instances it into SEVEN
+   more slots through Mesh_InstanceAtAngle:
+
+       angle   0x0800 0x1000 0x1800          radius 0x100
+       angle   0x0400 0x0c00 0x1400 0x1c00   radius 0x140
+
+   With the master at angle 0 that is EIGHT SPIKES AT EXACTLY 45
+   DEGREES APART, and the four diagonals carry a 1.25 radius factor
+   the axis-aligned ones do not.
+
+   THE RADIUS SCALES EXACTLY ONE VERTEX. Mesh_InstanceAtAngle tests
+   the dbf counter rather than a vertex index, so the factor lands on
+   the single pass where the counter is 1 - the second to last
+   vertex. Applying it to every vertex scales the whole spike instead
+   of stretching it, which on a four-vertex mesh is a visibly
+   different shape.
+
+   EACH INSTANCE GETS ITS OWN UV PASS, generated from the ROTATED
+   vertices with the same parameters the master got. That is the
+   opposite of Mesh_DeformAndMap, which maps the struts from their
+   rest pose.
+
+   THE INSTANCES EXPLAIN THE SLOT ARITHMETIC. Counting
+   Space_BuildObjects' own `adda.l #0x50,A0` finds 34 slots; the
+   seven built in here bring it to 41.
+
+   OBJECTS 11 AND 20 CANNOT BE DRAWN FROM THE FILE. Their UV tables
+   cover a 160 x 98 and a 160 x 99 rectangle - the framebuffer size -
+   and their texture pointers are filled at run time. They are
+   surfaces displaying something the demo renders.
+
+   EVERY OBJECT USES CULL MODE 0, and explicitly: Obj_SetCentroid
+   writes +0x4c = 0 for all twenty-one, as well as positioning each
+   object at the average of its own vertices - which is the key the
+   scene's draw-order sort uses.
+
+   THE PARTS ARE OPEN SHELLS, NOT CLOSED SOLIDS. Object 0 has 16
+   edges used by exactly one face and object 2 has 24. Their windings
+   are consistent and both split close to half and half when
+   projected, which is what a shell folded back on itself gives and
+   is NOT evidence of closure - an earlier reading of this project
+   took it for exactly that.
+
+   THAT HAS A VISIBLE CONSEQUENCE. Backface-culling an open shell
+   shows the inside at some angles: viewed from near the saucer's
+   axis the rim band turns away, is culled, and the far side shows
+   through. The demo has the same property and never notices, because
+   the ship is only ever seen from shallow angles - parts.txt 2.5.
+
+   NO POSITIONS ARE APPLIED. The vertices already carry the assembly:
+   object 0 spans comp2 -1.218..-0.746 and object 2 spans
+   -0.746..-0.444, abutting exactly.
+
+   sim/texmap.py carries this as SHIP_PARTS and SCENE_PARTS with a
+   self-test, and sim/run.py renders it.
+
+6.1.  The slot order, and how many are drawn
+
+   Space_BuildObjects fills the slots in a fixed order, and it is NOT
+   the chunk's object order [verified, read back out of g_SceneObjects
+   live on hardware]:
+
+       slot  obj  what it is
+       ----  ---  -------------------------------------------------
+        0     0   hull, textured from sub-block 1
+        1     2   hull, textured from sub-block 0
+        2     1   hull, the cylindrical band
+        3     3   hull, two passes
+        4     4   hull, two passes
+        5     8   flat black box, UV mode 0x4000
+        6     9   flat black box, UV mode 0x4000
+        7    10   flat black box, UV mode 0x4000
+        8    11   THE WINDOW BILLBOARD
+        9    13   claw, hub 0
+       10    12   claw, hub 6825
+       11    14   claw, hub 1365
+       12    15   claw, hub 2730
+       13    16   claw, hub 4095
+       14    17   claw, hub 5460
+       15    18   spike, the master at angle 0
+       16..22    the spike ring's seven Mesh_InstanceAtAngle copies
+
+   SLOTS 5 TO 7 ARE THREE SOLID BLACK BOXES, AND THAT IS THE DEMO'S
+   OWN LOOK. Space_BuildObjects passes mode 0x4000 for Fspacedata
+   objects 8, 9 and 10 at 0x002d0be4, 0x002d0c2a and 0x002d0c70, and
+   mode 0x4000 is Uv_GenerateFaceParams' shortcut at 0x002cfe68: it
+   writes the texture base, SIX ZERO UVS and a mode word of 0 per
+   face, and nothing else. Every pixel of every one of their faces
+   therefore samples texture longword 0, and for the ship's texture 0
+   - g_pShipTexBases[0] - that longword reads 00 00 00 00 [observed].
+   The boxes are a thousand units across and sit at a radius of
+   30000 to 44000, so when the window scene's camera swings in among
+   them they sweep across the frame as large flat black wedges and
+   slivers, over the starfield and over the hull alike.
+
+   IT LOOKS EXACTLY LIKE STRAY GEOMETRY AND IT IS NOT. Confirmed
+   against the hardware: our frame and the demo's were matched by
+   driving the emulator until g_CamSrcX/Y/Z read -1517,3113,1323,
+   which is one single tick of the window scene's camera path, and
+   the demo's own back buffer carries 522 pure black pixels in the
+   top-left 48 x 34 where ours carries 578 [observed]. The remaining
+   difference is one tick of camera motion. Anything that removed
+   these boxes would be removing the demo's picture.
+
+   An earlier revision of this table called the three "translucent",
+   which belongs to Fspacedata objects 5, 6 and 7 - the additive
+   wedges of subsystems/effects.txt section 6, which are slots 23 to
+   25. The two groups are unrelated.
+
+   THE THREE SHELLS COME AFTER THE SPIKE RING, not before the claws.
+   The live array separates the two groups cleanly: slots 9 to 14 all
+   carry the canonical claw's geometry pointer at +0x08, and the
+   shells carry zero there [observed, on hardware].
+
+   THE ORDER OF THESE TWO GROUPS IS LOAD-BEARING. Every skip table
+   treats 9-14 as one block and 15 upward as another - the planet and
+   window tables draw both, the explosion's and the release's draw
+   only 9-14 - so placing the shells among the claws silently costs
+   three of the six wherever the two groups differ.
+
+   Then thirty-one more slots of beams, sprites, the orb, the window
+   pair and billboard 20, which the later ship scenes reach by raising
+   g_SceneObjectCount - subsystems/renderer.txt.
+
+   BOTH SHIP SCENES SET THE COUNT TO 0x16, TWENTY-TWO, AND DRAW
+   TWENTY-THREE. Every dbf in Scene_SortAndDrawAll runs the count plus
+   one times, so slot 22 - the eighth spike - is keyed, sorted and
+   drawn. Taking the count as the number drawn leaves a gap in the
+   ring that reads as a modelling choice.
+
+   SLOT 8 IS THE ONLY GEOMETRY DIFFERENCE BETWEEN THE TWO SCENES.
+   Scene_ApplySkipTable (0x002ccb66) writes 41 longwords into the
+   slots' skip field at +0x40, and the planet scene's table
+   (0x002ccd6c) sets index 8 while the window scene's (0x002cce10)
+   sets nothing inside the count. So the planet scene hides object 11
+   and the window scene shows it - which it can, because by then
+   mode 4 has left a framebuffer snapshot for Uv_WriteBillboard11 to
+   texture it with. See parts.txt 2.8.
+
+   TWO SLOTS CARRY A SORT BIAS AND IT IS NOT A TRANSLATION. After
+   Obj_SetCentroid writes the vertex mean, Space_BuildObjects takes
+   0x186a0 off slot 0's posC2 and 0xc350 off slot 1's. Nothing but the
+   depth key reads posC2, so the effect is to force the hull's two
+   biggest pieces to the far end of the order and have them painted
+   first. Their true centroids sit within a few hundred units of each
+   other and of the rest of the ship, so without the bias they land
+   mid-order and paint over it - which only shows when the camera is
+   close, as it is for the whole of the window scene.
+
+   src/ship.c draws all TWENTY-THREE parts out of ten distinct
+   objects: the nine of section 6's table, object 11, seven more
+   copies of object 18, and the six claws.
+
+   THE SPIKE RING IS ONE OBJECT EIGHT TIMES [verified, 0x002d12ac
+   Spike_BuildRing]. Object 18 is the master at angle 0 and
+   Mesh_InstanceAtAngle makes seven more at 0x400 steps - 45 degrees -
+   with the four diagonals carrying a 0x140 radius the axis-aligned
+   ones do not. THE RADIUS SCALES EXACTLY ONE VERTEX, the second to
+   last, because the test is on the dbf counter and not the vertex
+   index; scaling them all makes the spike fatter instead of longer.
+
+   THE SIX CLAWS ARE SIX OBJECTS, 12 to 17, placed 60 degrees apart -
+   0, 1365, 2730, 4095, 5460 and 6825 of 8192. Mesh_BendChain bends
+   each 16-vertex chain at vertices 0, 4 and 8, every pass turning
+   everything downstream of its anchor so the bends compound. THE BEND
+   IS IN THE comp0/comp2 PLANE AND THE ANGLE IS MIRRORED - eori.l
+   #0x1fff turns g into 8191 - g, so a raw 0x700 is about -78.8
+   degrees and reading the immediate directly bends the claw the wrong
+   way.
+
+   THE SETUP ANGLES ARE WHAT IS ON SCREEN, measured rather than
+   reasoned [observed, on hardware]. Scene slot 9 is object 13 and its
+   vertex pointer is repointed to a deform buffer at 0x00651f28, not
+   to the chunk. Reading it back:
+
+       vertex   chunk rest pose           live
+       0        5270, -8, 27153          identical - it is the anchor
+       1        4917, 1471, 28590        3791, 1471, 27085
+
+   comp1 is UNCHANGED, and solving the other two for a rotation about
+   vertex 0 gives cos 3177, sin -16087 - which is -78.8 degrees, and
+   -78.8 degrees is exactly raw 0x700 through the eori mirror. So
+   Mesh_DeformAndMap's bend is live and Strut_ResetClaw's zeroing does
+   not win, whatever the address order of the two calls suggests.
+
+   AND THE SIX ARE ALREADY PLACED IN THE CHUNK, which the same read
+   proves: comp1 unchanged means no rotation in the comp0/comp1 plane
+   happened at all. Object 13 sits on +comp0, object 12 at +60 degrees
+   and object 14 at -60, so the hub spacing is in the data. Applying a
+   placement rotation on top of it turns each claw a second time and
+   leaves all six fingers pointing different ways.
+
+   THE TWO TRANSFORMS DISAGREE ABOUT WHICH POSE THE UVs COME OFF.
+   Spike_BuildRing generates from the ROTATED vertices;
+   Mesh_DeformAndMap points the object back at its REST pose, calls
+   Uv_GenerateFaceParams, and restores the deformed one afterwards. So
+   a spike's texture turns with it and a claw's does not.
+
+   STRUT_SETCLAWPOSE IS THE OPENING, AND THE CLOSED POSE IS ITS OWN
+   STARTING POINT [verified, 0x002d6388]. Each joint keeps a phase in
+   g_ClawPhases and gives the deformer
+
+       bias + ((sin(min(phase, 0x800)) * -bias) >> 14)
+
+       joint 0   bias +0x700   rate 0xa
+       joint 1   bias -0x380   rate 0x14
+       joint 2   bias -0x580   rate 0x28
+
+   so phase 0 is the bias exactly - the three numbers above ARE the
+   0x700, 0x1c80, 0x1a80 of the closed pose, the last two arriving
+   through the eori mirror - and the clamp at a quarter turn, where
+   the table reads 0x4000, cancels the bias and leaves zero: a
+   straight finger.
+
+   THE STAGGER IS IN THE SEEDS, NOT THE RATES. The lookup is skipped
+   while a phase is negative and the phase advances anyway, and
+   Strut_ResetClawPhases seeds (0, -0x800, -0x800), so joint 0 moves
+   at once, joint 2 from call 52 and joint 1 from call 103 - the claw
+   unfurls from the base outward. The array in the FILE is all zeros,
+   so taking the seeds from there opens all three together and in the
+   wrong order.
+
+   0x002cffea rebuilds the six claws from the three angles: copy back
+   from the canonical rest pose, bend at vertices 0, 4 and 8, rotate
+   by a hub angle stepping 0x555. No face re-sort, and the UVs come
+   off the rest pose, so only vertices change.
+
+   AND THE CANDY-CORN CLAWS ARE A TEXTURE SWAP, NOTHING MORE.
+   Strut_RetextureToTex3 (0x002cf550) re-runs Uv_GenerateFaceParams
+   over all six claws off the rest pose with the same mode, scale and
+   centres and Fshiptextures sub-block THREE in place of two
+   [verified]. Space_RunPart calls it at the phase 5 to 6 boundary, so
+   it is later than the opening - parts.txt 3.2.
+
+   Strut_AnimateClaw's two-phase close is still [open]. Neither runs
+   in mode 1.
+
+6.2.  The camera path shares the chunk
+
+   Fspacedata's size table has four entries past the geometry - 480,
+   516, 32768 and 1024 - and THE 480 IS THE WINDOW SCENE'S CAMERA
+   PATH: forty twelve-byte keyframes, three longwords each [verified].
+   The geometry stops at byte 13818 and the path begins there.
+
+   g_pCamPath points at that sub-block and CamPath_Setup (0x002cff88)
+   writes g_CamPathKeys as 0x28. CamPath_Walk (0x002d6550) indexes it
+   from +0xc:
+
+       key    = g_CamPathCursor >> 8
+       t      = g_CamPathCursor & 0xff
+       entry  = g_pCamPath + 0xc + key * 12
+
+   and mode 5's tick adds TWO to the cursor, so ONE SEGMENT LASTS 128
+   TICKS. Past the last keyframe it resets the yaw to -0x120 and the
+   cursor to zero, so the sweep loops.
+
+   THE TWELVE BYTES BEFORE THE FIRST ENTRY ARE A DUPLICATE OF IT, and
+   that is not padding. CamPath_EvalCatmullRom reads four control
+   points at -0xc, 0, +0xc and +0x18 of the walker's pointer, so
+   segment 0 needs a P[-1] in front of the table; the file supplies
+   one by repeating entry 0. The duplicate also confirms the layout:
+   maybe_Space_RunWindowScene passes -0x15b, -0x6a3 and 0x2af to
+   CamPath_Setup as the opening camera, and that is exactly
+   (-347, -1699, 687), which is both the pre-entry and entry 0.
+
+   IT IS A CATMULL-ROM SPLINE, not a linear blend
+   [verified, 0x002d5824]:
+
+       a = -P[-1] + 3P[0] - 3P[1] + P[2]
+       b = 2P[-1] - 5P[0] + 4P[1] - P[2]
+       c = -P[-1] + P[1]
+       d = 2P[0]
+       (((a * t >> 8) + b) * t >> 8 + c) * t >> 8 + d, then >> 1
+
+   evaluated by Horner with t in 0.8 fixed. The spline overshoots a
+   keyframe on purpose, which is what makes the sweep read as one
+   continuous move rather than a series of aimed-at points - a linear
+   blend between the same keyframes is visibly not the same path.
+
+   ENTRIES 0 TO 26 CARRY THE SWEEP and the rest of the declared forty
+   are zero but for a stray 23040 in the last. The path runs from
+   (-347, -1699, 687) out to (389, 973, -45292), which is comp2 - the
+   depth - travelling from +687 to -45292, so the camera leaves the
+   window and swings right around the vessel. src/part_window.c walks
+   it; what it does not yet draw is the ship, which is mode 5's
+   Window_DrawMode5Frame - parts.txt 2.8.
+
+7.  Reading it
+
+    py -3.10 tools/geo/geom.py Fspacedata            list the objects
+    py -3.10 tools/geo/geom.py Fspacedata --obj 19   one in detail
+    py -3.10 tools/geo/render.py Fspacedata OUT.png  a contact sheet
+    py -3.10 sim/run.py                              the viewer, F1 for keys
+    py -3.10 sim/run.py --list                       what it can load
+    py -3.10 sim/run.py --bench                      time a frame, no window
+
+   geom.py refuses an object whose block sizes do not match its own
+   counts, so a wrong size table fails loudly rather than producing a
+   plausible mangled mesh.
+
+   tools/geo/geom.py carries a TABLES dict mapping a chunk name to its
+   size-table address and entry count. Only Fspacedata is in it;
+   adding a chunk means finding its Dat_LoadSplit call site and
+   reading the two lea operands.
+
+8.  Open questions
+
+   o Does anything else depend on the sorted face order? Section 3.3
+     accounts for the two billboards and rules out the projected
+     writers and the flat table, but the sort runs before every
+     per-object setup step and only the UV writers have been checked
+     against it.
+
+   o How does Rast_TexturedPoly survive a vertex at 0x7fffffff?
+     Mode 2 skips the near-plane reject, so it is handed them, and
+     section 3.1 measures the cost of the reconstruction dropping
+     those faces instead: the near field comes out empty where the
+     demo's is full of hull. Transcribing the rasteriser's own bounds
+     tests is what closes it, and the explicit backface cull can come
+     out at the same time.
+
+   o What chooses the projection mode for objects other than the
+     ship and Scene_SetupPart14's fourteen? Those two callers are
+     read; the rest are not.
+   o Is Uv_ProjCylC1's comp0 cull deliberate? See section 4.
+   o Scene_SetupPart14's geometry pointers are immediates into
+     CODE_03, not relic.dat split pointers - so that part's models
+     are linked into the executable. How many other parts do that,
+     and is the format identical? It parses the same way.
+   o Where are the per-object transforms? 21 objects with repeated
+     parts implies a scene graph or a table of placements, and none of
+     it is in the geometry.
+   o Is the word at face+0x00 a vertex count or the constant 2?
+   o Does any other chunk hold geometry? Farmdata, Fsprout and
+     Frelicdata have not been checked against this layout, and their
+     split tables have not been found.
+   o What are the four tail entries of the Fspacedata size table -
+     480, 516, 32768, 1024? 1024 is 256 longwords, the size of a
+     256-entry palette; 32768 is a plausible buffer. Neither is read
+     yet.
+   o Object 19 is far larger than the rest in both extent and face
+     count. Whether it is the assembled ship, a separate structure, or
+     the scene's largest prop is unknown.

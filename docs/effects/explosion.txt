@@ -1,0 +1,405 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                   THE SHIP BLOWS UP, SEEN SIDE ON
+
+
+Abstract
+
+   Part 2.12, anim mode 0xc, Space_RunPart's phase 10. The scene opens
+   almost entirely white - the previous part's flash still filling the
+   frame - and a glow CONTRACTS to reveal the blast behind it. The
+   blast is a train of four rings seen EDGE ON, which is why it reads
+   like Star Wars or Star Trek rather than a fireball: the explosion is
+   a disc and the camera sits in its plane.
+
+   Everything in the scene is driven by one counter. The rings, the
+   glow and the wash write only byte +2, so their colour is entirely
+   the light base; the ray burst is the exception and adds all four
+   channel bytes at once.
+
+Table of Contents
+
+   1. One Counter Drives Everything
+   2. The Contracting Glow
+   3. The Rings
+   4. The Closing Wash
+   5. The Ring Must Scale, And Scale 1.0 Cannot Catch It
+   6. The Camera And The Ship
+   7. Open questions
+
+   The ray burst's detail is in the Ghidra plate comment on Draw_Flare.
+
+1.  One Counter Drives Everything
+
+   Phase 10 zeroes g_WhiteoutLevel at Space_RunPart +0x45a and mode 0xc
+   ramps it ONE a tick [verified, 0x002d6332]. The glow's radius, every
+   ring's size and the closing wash are all functions of that single
+   value - there is no per-effect clock anywhere in the scene.
+
+   THE PHASE RUNS ABOUT 420 TICKS AND THE FUSE DOES NOT SAY SO.
+   Space_RunPart +0x452 seeds g_SceneFuseTicks 0x104 and mode 0xc
+   counts it down one a tick against a level that rises one a tick, so
+   the two ought to sum to 260 - and they do not. Stepping the demo,
+   the phase still reads mode 0xc at level 413 with the fuse at 7, and
+   has cleared twelve frames later [observed]. So it ends near level
+   420, and something between the seed and the loop moves one of the
+   two. The length is what makes the scene end white - section 4.
+
+   G_WHITEOUTLEVEL IS A LONGWORD AND READING ITS WORD READS THE WRONG
+   HALF. Mode 0xc and every consumer use sub.l against 0x002e0bb2
+   [verified], so a two-byte read answers 0 for every level below
+   65536 - which looks exactly like a counter that has not started
+   ramping yet, and sends you looking for a gate that is not there.
+
+   AND THREE OF THE FOUR EFFECTS WRITE ONLY BYTE +2. The rings, the
+   glow and the wash all add into LIGHT and never touch a colour
+   channel, so their colour is entirely the light base - and phase 10
+   is handed (0x5f, 0x5f, 0x7f) at Space_RunPart +0x3c8 [verified], a
+   pale blue-white. That is why the blast is light blue.
+
+   THE RAY BURST IS THE EXCEPTION. Draw_Flare indexes a colour ramp and
+   does add.l into the pixel, so it writes R, G, B and LIGHT together -
+   it is the only thing in the scene with a colour of its own.
+
+   The render path is 0x002cd96e: the sky, Scene_DrawPlanetAndHalo,
+   Scene_SortAndDrawAll, Explosion_DrawFrame and Flash_WashFullScreen.
+
+2.  The Contracting Glow
+
+   The last thing Explosion_DrawFrame does [verified, 0x002d2350
+   +0xbc]:
+
+       r = 0xbb - g_WhiteoutLevel
+       if r < 0: draw nothing
+       if r > 0x7f: r = 0x7f
+       Draw_GlowBlob(r, x = 0x4e, y = 0x32, ramp = g_RampBolt)
+
+   BECAUSE THE LEVEL RISES, THIS SHRINKS: 127 at the phase's open, gone
+   by level 187. It is the same primitive the flash before it used,
+   run backwards, and it is what reveals the scene.
+
+   THE SCENE'S WHITE PEAK IS AT THE PHASE BOUNDARY, NOT INSIDE EITHER
+   PHASE. The flash that closes part 2.11 grows a radius-100 blob at
+   (0x46, 0x37), which leaves the frame's corners dark - they sit 89 to
+   99 away, where the falloff is nearly spent, and the port measures
+   p10 at 161 of 255 there [observed]. This phase then opens with a
+   radius-127 blob at (0x4e, 0x32), which reaches them but does not
+   whiten them. So the screen is whitest across the cut, and a
+   reconstruction that stops at the end of phase 9 never gets there.
+
+   THE RADIUS HOLDS AT THE CAP FOR THE FIRST SIXTY TICKS, because
+   0xbb - level stays above 0x7f until level 60. The blob sits at its
+   full size for over a second before it begins to shrink, and that
+   hold is the pause before the scene is revealed, not a stalled
+   timer. Read live at the call, level 100 gives D1 = 87 [observed,
+   on hardware], which is the formula to the unit.
+
+   AND THE FOUR CORNERS ARE NEVER WHITE, IN THE DEMO EITHER. A corner
+   sits 92 from (0x4e, 0x32) by g_PolarTable, and the demo's own
+   tables carry that to g_BlobFalloff[127][92] = 185 and
+   g_RampBolt[185] = 35 of 0x3f; at radius 106 they give 222 and 16
+   [verified]. So the background shows through the corners of the
+   opening white-out by construction. Widening the blob to cover them
+   would be inventing a radius no caller asks for.
+
+3.  The Rings
+
+   Explosion_DrawFrame calls Explosion_DrawRing four times [verified,
+   0x002d2350]:
+
+       D1 = (K - g_WhiteoutLevel) * 2,  K = 0x12c, 0x118, 0x104, 0xfa
+
+   D1 IS AN INVERSE RADIUS, which is the thing to get right.
+   Explosion_DrawRing computes D4 = 0xa0000 / D1 and returns at once
+   for D1 <= 0, so as the level rises each ring's D1 falls, its D4
+   grows, and the band EXPANDS. The four Ks are 300, 280, 260 and 250,
+   so the rings are a STAGGERED TRAIN at four different sizes rather
+   than one shell - at any level the K=250 band is the largest.
+
+   THE SHAPE IS A BAND, NOT A CIRCLE [verified, 0x002d2444]:
+
+       A0      = g_pFrameBuffer + 0x7a80, which is pixel 7840 = row 49
+       half    = D4 >> 8, capped at 0x31
+       two loops, one walking UP from that row and one DOWN
+       each row 0xa0 = 160 pixels, the full width
+
+   So it is a full-width horizontal band centred on the middle
+   scanline, growing symmetrically. Seen from the disc's plane that is
+   exactly what a ring looks like.
+
+   THE TEXTURE IS Fplasma ITSELF. g_pRingTexture is slot 0 of the
+   second Dat_LoadSplit, whose chunk name at 0x002e0cf3 reads "Fplasma"
+   [verified], and the live pointer is the chunk base [observed]. It is
+   read as big-endian LONGWORDS, and the +0x20200 puts the window on
+   the chunk's midpoint because the index is a SIGNED word times four
+   and so reaches 128K either side of it - Fplasma is 0x40000, so that
+   is the whole asset centred.
+
+   AND THE SCENE FADES THAT TEXTURE'S ROWS BEFORE IT DRAWS ANYTHING.
+   Space_RunPart calls Explosion_FadePlasmaRows 0x002ccaa4 on its way
+   into the phase, right after Ham8_BuildTables sets the light base
+   [verified, 0x002cc96e]. Per row of the 256 x 256 longword grid:
+
+       d = max(0, |row - 0x80| - 0x28)
+       R -= d ; G -= d ; B -= d          saturating at 0
+
+   THE LIGHT BYTE IS NOT TOUCHED - the three sub.b's walk bytes 0, 2
+   and 3 of the longword, which is R, G and B with LIGHT skipped.
+
+   THIS IS WHAT MAKES A BAND END IN WISPS RATHER THAN AT AN EDGE, and
+   it is the one thing the geometry cannot do. The band's row sits in
+   the index's HIGH byte, so the texture row IS the distance from the
+   band's middle, and the pass turns that distance into a fade. What
+   reaches the screen is one sample's B channel alone (below), B peaks
+   at 0x24, and the subtraction passes 0x24 at row 0x4c - so every
+   texture row past 76 is BLACK. A band's own last row is 89 to 95 out
+   [observed, the four rings at level 187], so the dbf's hard cut at
+   +-half falls where the texture already adds nothing.
+
+   WITHOUT THE PASS THE BAND HAS A DEFINED EDGE, because Fplasma's B
+   never reaches zero - its minimum is 1 over all 65536 longwords
+   [observed]. A reconstruction that reads the raw chunk gets a strip
+   with a horizontal cut top and bottom instead of smoke.
+
+   Destruct_DarkenPlasma 0x002ccb08 is the same pass with 0x1e in
+   place of 0x28, for the destruction.
+
+   THE FADE NEVER REACHES ANOTHER PART, even though both passes edit
+   the chunk in place. Every scene that wants Fplasma LOADS ITS OWN
+   COPY first - 0x0021fab0 allocates and reads the archive afresh on
+   each call - and frees it after:
+
+   +-----------------------+-----------+----------+-----------+
+   | Caller                | Loads at  | Fades    | Frees at  |
+   +=======================+===========+==========+===========+
+   | Space_LoadAssets      | 0x2ced48  | -        | 0x2ced50  |
+   +-----------------------+-----------+----------+-----------+
+   | Space_RunPart         | 0x2cc5a6  | 0x28     | 0x2cca4a  |
+   +-----------------------+-----------+----------+-----------+
+   | Space_RunEarth        | 0x2cc0ce  | -        | 0x2cc1c8  |
+   +-----------------------+-----------+----------+-----------+
+   | Space_RunReturn       | 0x2c8ddc, | -        | 0x2c8e0e, |
+   |                       | 0x2c8e12  |          | 0x2c8e48  |
+   +-----------------------+-----------+----------+-----------+
+   | Space_RunDestruction  | 0x2c8438  | 0x1e     | 0x2c85dc  |
+   +-----------------------+-----------+----------+-----------+
+
+   So exactly two scenes see a faded plasma and they see different
+   fades; every other reader gets the chunk as it sits on disk.
+
+   [trap] g_PlasmaFadedFlag 0x002ccaa2 LOOKS LIKE A RUN-ONCE GUARD AND
+   IS NOT ONE. Explosion_FadePlasmaRows opens with a tst.w on it and
+   nothing branches on the result; Destruct_DarkenPlasma only writes
+   it. Nothing is protected by it - what stops the fades compounding
+   is the reload, not the flag.
+
+   EACH PIXEL SAMPLES IT TWICE, once at +g_RingPhaseB with the result
+   shifted down 8, once a further +g_RingPhaseA, and the sum is added
+   to byte +2 as a RAW byte add with no saturate. ONLY ONE CHANNEL OF
+   ONE SAMPLE EVER REACHES THE SCREEN: Fplasma's LIGHT byte is zero
+   throughout [observed], so the shifted sample contributes nothing to
+   the low byte and what is added is the second sample's B. Explosion_DrawFrame
+   turns those two counters +5 and -3 a frame, in OPPOSITE directions
+   [verified, 0x002d2398], and that counter-rotation is what makes the
+   surface churn instead of sliding.
+
+   The per-row and per-pixel index steps all come from D4:
+
+       row start = -0x190000 / D4
+       row step  =  0x640000 / D4
+       col step  = (0x500000 / D4) rotated right 8
+
+   so a big ring is sampled coarsely and a small one finely.
+
+   MEASURED IN THE PORT: the band is about 5 rows at the phase's open
+   and grows to the 48-row cap by its end; the centre column lights 52
+   rows at tick 200 and all 100 by tick 259 [observed].
+
+   THE TEXTURE'S LOW TWO BYTES ARE CONSTANT. Every longword in Fplasma
+   has the form XX YY 00 01 - byte 2 is always 0x00 and byte 3 always
+   0x01 [verified, the chunk's own bytes]. Explosion_DrawRing forms
+   (tex1 >> 8) + tex2 and adds the LOW BYTE of that, which is byte 2 of
+   the first sample plus byte 3 of the second, so the sum's low byte is
+   0x00 + 0x01 = 1 for every pixel in every band.
+
+   SO A RING IS A UNIFORM +1 AND NOT A TEXTURE AT ALL. The churn the
+   two counter-rotating phases produce is in bytes the add throws away.
+   Four rings give four, which against the demo's mean LIGHT of 7.1 in
+   this frame is most of it.
+
+   AND Fplasma IS FREED BEFORE THIS SCENE RUNS. Space_LoadAssets loads
+   it, hands it to Sky_BuildTexture, then calls Dat_Free on it
+   [verified, 0x002ced50 and 0x0021f93e, which matches the 16-byte name
+   and calls exec's FreeMem]. The slot pointer is left dangling and the
+   block is not overwritten - the guest's bytes at the sampled offset
+   still match the file exactly [observed] - so the demo reads freed
+   memory that happens to still hold its texture. The port reads the
+   file, which is the same bytes by luck rather than by design.
+
+
+4.  The Closing Wash
+
+   Flash_WashFullScreen [verified, 0x002cdb9a] is uniform over all
+   16000 pixels with no geometry at all:
+
+       amt = g_WhiteoutLevel - 0xe1
+       if amt < 0: do nothing
+       amt >>= 1, capped at 0x3f
+       every pixel: LIGHT = g_LightSatLut[LIGHT + amt]
+
+   SO IT IS THE SCENE'S CLOSING WHITE-OUT. It does nothing below 225
+   and saturates at 351, and the phase runs to about 420 - so the last
+   seventy ticks are a flat full-frame white with no geometry left in
+   them. The port measures mean LIGHT 58.0 at tick 340 and a uniform
+   63 from tick 352 to the end [observed].
+
+   A PART CUT OFF AT 260 NEVER REACHES IT. The fuse appears to promise
+   that length and the wash is only a quarter up by then, so the scene
+   ends on a dim haze instead of a white-out and the join into the next
+   part is lost. Section 1 has the real length.
+
+5.  The Ring Must Scale, And Scale 1.0 Cannot Catch It
+
+   THE DEMO WRITES RAW ROWS either side of pixel 7840, which is row 49
+   of its 160 x 100 frame [verified, 0x002d2444 +0x34]. A port that
+   copies that literally puts the band at row 49 of whatever height the
+   HOST asked for - the upper seventh of a 360-row window - while every
+   other effect in the scene scales its centre properly and stays in
+   the middle. The band also becomes a thin strip with a hard top and
+   bottom instead of four overlapping bands blending into a gradient.
+
+   AND SCALE 1.0 CANNOT DETECT IT. At 1.0 the raw row and the scaled
+   row are the same number, so the row profile measures correct to a
+   LIGHT mean difference of 1.0 against the demo while the scaled
+   window is visibly wrong. The port measured right and looked wrong
+   for exactly this reason.
+
+   THE GEOMETRY SCALES AND THE TABLE DOMAIN DOES NOT, which is rule
+   20's rule. The centre row and the half extent go through
+   FX_MUL(.., f->scale) like Draw_GlowBlob's centre does, while the
+   column accumulator is walked over the demo's OWN 160 columns -
+   carry fixup and all - and a frame pixel reads the entry for its demo
+   column. Scaling the accumulator instead would step the texture
+   index at the frame's resolution and sample a different part of
+   Fplasma at every scale.
+
+   VERIFIED AT THREE SCALES, band centre as a fraction of height:
+
+       +-------+------------+--------------+
+       | scale | frame      | band centre  |
+       +=======+============+==============+
+       |   1.0 | 160 x 100  | 50%          |
+       |   2.0 | 320 x 200  | 50%          |
+       |   4.0 | 640 x 400  | 50%          |
+       +-------+------------+--------------+
+
+   [observed], with scale 1.0's LIGHT still matching the demo at a mean
+   difference of 1.0.
+
+   AND THE DEMO ROW IS CARRIED IN 8.8, NOT ROUNDED. Rounding it makes
+   each demo row a block of `scale` identical frame rows and the band
+   comes out a staircase; resampling between them gives steps of 0.8 to
+   2.3 per six rows at scale 4 where rounding gives runs of zero and
+   then a jump [observed]. That is relic.h's rule about resampling a
+   table domain rather than stepping it, and it is exact at 1.0 where
+   the fraction is zero.
+
+   AND THE MIRROR HAS A SEAM THAT ONLY SHOWS WHEN SCALED. The demo
+   draws the band as two loops from the middle outward - one walking
+   up from row 49, one down from row 50, each starting its row
+   accumulator at zero [verified, 0x002d24ac and 0x002d24f2]. So rows
+   49 and 50 BOTH carry texture row 0, and the port's two branches
+   reproduce that at scale 1.0 exactly.
+
+   A SCALED ROW CAN LAND BETWEEN THEM, and it indexes negative: at
+   scale 4 the frame rows for demo rows 49.25, 49.5 and 49.75 all fall
+   in the upward branch with a negative index. Rejecting those leaves
+   `scale` - 1 blank rows straight across the frame, which reads as a
+   dark ribbon through the middle of the ring. They clamp onto the
+   innermost row instead, which is the row the demo's own duplicate
+   already puts there.
+
+   THE BAND'S OUTER BOUNDARY IS STILL A CUTOFF, and that is the demo's
+   own: at i = half the row loop simply ends, with the last row holding
+   whatever the texture gave it rather than tapering to nothing. Scaling
+   makes the step `scale` pixels wide instead of one, so it reads harder
+   than it does on the Amiga, but softening it would be inventing a
+   falloff the binary does not have.
+
+   THE RENDER RATE HAS NOTHING TO DO WITH POSITION. g_WhiteoutLevel
+   steps once a VBL while the ring phases step once per
+   Explosion_DrawFrame - measured 7 steps per 20 VBLs on a slow
+   configuration and 14 per 20 with the host CPU set to fastest
+   [observed] - so a slow host samples a different part of Fplasma.
+   That changes which texture values a band gets. It cannot move a row.
+
+6.  The Camera And The Ship
+
+   THE CAMERA IS 70000 UNITS OUT AND NEVER MOVES. Phase 10's setup
+   writes the target (0, -0x11170, 0xdac) and zeroes both angles, the
+   render's latch copies target to camera, and mode 0xc touches none of
+   them [verified, Space_RunPart +0x416; read back live as 0, -70000,
+   3500 with yaw and pitch zero]. That distance is what makes this a
+   side view from far away and the wreck a speck.
+
+   AND THE SHIP IS STILL IN THE SCENE, BUT ALONE. Phase 10 applies its
+   own skip table before the loop: g_ExplosionSceneSkipTable, 41
+   longwords at 0x002ccc24, one a g_SceneObjects slot, written into
+   each slot's +0x40 by Scene_ApplySkipTable [verified, Space_RunPart
+   +0x44e]. Non-zero means skip, and it draws 0-7, 9-14 and 38 only.
+
+   WHICH IS HOW THE ORB RIG LEAVES THE SCREEN. Against
+   g_PlanetSceneSkipTable, which draws every slot but 8, this one turns
+   off 15-37, 39 and 40 - the 25 slots the orb sequence filled with its
+   arcs, its attach flares and the orb. A part that inherits the
+   previous table draws that whole rig, arcs still animating, behind
+   the explosion.
+
+   THE OBJECT ANGLE SPINS, gaining 0x14 a tick
+   [verified, Anim_SceneTick +0x6c2; measured 396 to 596 over ten
+   ticks]. Phase 10 does not reseed it, so it carries the 0x100 the pan
+   held and starts turning from there. The port draws 381 pixels of ship
+   at level 46, x 60 to 98 and y 20 to 51 [observed] - mostly swamped by
+   the contracting glow that early, which is why its arrival barely
+   moves the frame score.
+
+7.  Open questions
+
+   -  THE PORT'S FRAME IS FIFTEEN TIMES TOO BRIGHT AND THAT BLOCKS THE
+      SCENE. At level 221 the demo's back buffer means are R 8.2
+      G 6.9 B 13.3 with LIGHT 7.1, peaking near 110; the port renders
+      R 126.8 G 123.6 B 159.8 [observed]. The demo's phase 10 frame is
+      very nearly black with a faint glow in it, and the port's is lit
+      throughout.
+
+      IT IS THE SAME DEFERRED CHANNEL-SCALE PROBLEM as overview.txt 7,
+      reaching a second scene. Nothing here is mis-transcribed: the
+      light base (0x5f, 0x5f, 0x7f) is the demo's own, and the port's
+      resolve clamps it correctly rather than extrapolating. What is
+      wrong is that the port's accumulated LIGHT is far above the
+      demo's 7.1, so every pixel resolves most of the way to the base.
+      Scaling the rings or the burst down to compensate would be
+      tuning a constant against a screenshot, which rule 12 forbids
+      and which was already tried and rejected once on the envelope.
+
+      So this scene cannot be judged until the channel scale is
+      settled. It is the second effect gated on that question, the
+      envelope's shading being the first.
+
+   -  WHAT THE RAY BURST'S THREE SETUP GLOBALS DO. Explosion_DrawFrame
+      writes 0x002e0b6e from the UNCAPPED pulse value as
+      (n - 0x38) * 2 << 8, 0x002e0b62 = 0x7f00 and 0x002e0b42 = 0x35
+      before calling Draw_Flare. None is read by anything transcribed,
+      and because the flare's own radius is capped the pulse table's
+      only visible route into the frame is through 0x002e0b6e.
+
+   -  WHAT FOLLOWS PHASE 10. Space_RunPart clears g_SceneMode at
+      0x002cca24 after the loop, so the orb sequence ends there, but
+      where control goes next is not traced.
+
+   -  THE RING'S INDEX CAN RUN OFF Fplasma. A large positive index
+      reaches 0x81e3a0 against the chunk's end at 0x8161a0 [observed],
+      so the demo samples whatever follows it in fast RAM. The port
+      clamps instead, which is a deliberate divergence - matching it
+      would mean knowing what the allocator put there.

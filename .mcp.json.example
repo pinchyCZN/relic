@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "Copy to .mcp.json and replace every <...> with a real path.",
+    ".mcp.json itself is gitignored: it names one machine's layout,",
+    "and one of these servers lives outside this repository.",
+    "",
+    "ghidra     the bridge to a running Ghidra. THREE Ghidra projects",
+    "           can share a machine and a PORT DOES NOT IDENTIFY ONE,",
+    "           so the server is found by project name rather than",
+    "           pinned here - a write against another project's",
+    "           database corrupts it. tools/gq.py applies that rule",
+    "           mechanically and refuses any project but relic;",
+    "           prefer it. CLAUDE.md 2.1.",
+    "relic-agent    the port's own debug agent - tools/agent/,",
+    "           docs/subsystems/agent_mcp.txt. Lives in here.",
+    "amiga-dbg  the WinUAE debugger bridge - tools/amiga/. Lives in",
+    "           here, but it needs an emulator that is not."
+  ],
+  "mcpServers": {
+    "ghidra": {
+      "type": "stdio",
+      "command": "<path to python.exe>",
+      "args": [
+        "<path to bridge_mcp_ghidra.py>"
+      ],
+      "env": {
+        "GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS": "all"
+      }
+    },
+    "relic-agent": {
+      "type": "stdio",
+      "command": "<path to python.exe>",
+      "args": [
+        "<path to this repo>/tools/agent/mcp_server.py"
+      ]
+    },
+    "amiga-dbg": {
+      "type": "stdio",
+      "command": "<path to python.exe>",
+      "args": [
+        "<path to this repo>/tools/amiga/mcp_server.py"
+      ]
+    }
+  }
+}

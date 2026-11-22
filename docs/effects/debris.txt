@@ -1,0 +1,530 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                     DEBRIS FALLING ONTO THE PLANET
+
+
+Abstract
+
+   The third and last phase of Space_RunReturn: the planet seen from
+   close orbit with burning debris falling onto it. It follows the
+   portal burst of effects/return.txt and ends the return module.
+
+   Its parts are almost all primitives the earlier space scenes
+   already built. What is new is one streak routine, one light-plane
+   blend, and three small entity tables driven by a script.
+
+Table of Contents
+
+   1. Where It Sits
+      1.1. The Black Screen Before It
+   2. The Frame
+      2.1. The Planet Is The Same Buffer, Rotated
+           2.1.1. Texture_GlowLight
+           2.1.2. The Span Half Width, And Its Off-By-One
+      2.2. The Bolides, And The Script That Places Them
+      2.3. The Impacts
+           2.3.1. The Streak
+      2.4. The Sparks
+      2.5. The Scorch
+   3. The Tables
+   4. The Reconstruction
+   5. Open questions
+
+1.  Where It Sits
+
+   Space_RunReturn 0x002c8ddc runs three phases and this is the
+   last:
+
+       0x002c8df4   Space_RunDeparture   the flight and the ripple
+       0x002c8e0a   Space_RunPortalRun   the swirl and the burst
+       0x002c8e1e   Debris_RunScene      this
+
+   Debris_RunScene 0x002cc3a2 sets scene mode 5 at 0x002e0bf6, a
+   fuse of 0x1c2 = 450 fields at 0x002e0a92 and the light base
+   0x7f/0x5f/0x3f, calls Debris_SetupScene once and then
+   Debris_DrawFrame once a field until the fuse or 0x00237230 ends
+   it [verified].
+
+1.1.  The Black Screen Before It
+
+   THE BLACK FRAMES BETWEEN THE BURST AND THIS SCENE ARE THE LOADER,
+   NOT AN EFFECT. Space_RunReturn frees Fplasma at 0x002c8e0e and
+   re-loads it at 0x002c8e12 - Dat_FreeChunk then Dat_LoadSplit on
+   the name at 0x002e0cf3 - before calling Debris_RunScene. Nothing
+   draws and no counter advances while that runs.
+
+   The free and the re-load are of the SAME chunk. The portal run
+   writes into that buffer, so the scene needs a clean copy and
+   cannot simply keep the one it has [verified].
+
+2.  The Frame
+
+   Debris_DrawFrame 0x002ce046 latches the camera once and then
+   makes five calls [verified]:
+
+       0x002ce068   Debris_BlendScorch       section 2.5
+       0x002ce072   Warp_FullscreenRotate    section 2.1
+       0x002ce076   Debris_StepBolide        section 2.2
+       0x002ce07a   Debris_DrawSparks        section 2.4
+       0x002ce07e   Debris_DrawImpacts       section 2.3
+
+   0x002e0b2a and 0x002e0b2e are copied from 0x002e0b32 and
+   0x002e0b36 at the top, and the camera word at 0x002e0bec is
+   0x002e0b2a >> 5. Everything below reads the latched pair, so the
+   whole frame is drawn against one camera.
+
+2.1.  The Planet Is The Same Buffer, Rotated
+
+   The limb is Warp_FullscreenRotate 0x002d3e94 over the buffer at
+   0x002d32d4 - THE SAME SOURCE THE OTHER SPACE SCENES USE. The
+   quadrant reads mirrored onto the right of the screen because of
+   the rotation, not because a second asset was authored for it
+   [verified]. orb.h already holds the routine.
+
+   What it reads is built by Debris_BuildPlanet 0x002d3136, 256 x
+   256 longwords, in SIX passes [verified]:
+
+       1  0x002d315a   the sky resampled through the direction
+                       table, bias 0x118, mask 0x3ffff, plus
+                       0x10000000 - +0x10 on R alone
+       2  0x002d31a4   Fearth stamped 0x5c x 0xf0 at +0x8c00, a
+                       zero longword skipped as a hole, same red
+       3  0x002d31ca   the limb glow, 100 x 250 at +0x1380c,
+                       ramp 0x002e17c8 - NOT the earth's
+       4  0x002d3256   Texture_GlowLight(0x7f, 0x73, -2)
+       5  0x002d326c   a running smear, NOT a halve - see below
+       6  0x002d3288   copied to the second buffer, and 0x002d32d4
+                       and 0x002d32d8 take the pair
+
+   PASS 3 IS NOT THE EARTH'S PASS 3, in two ways that both bite.
+   It reads a DIFFERENT RAMP - 0x002e17c8 against 0x002e13c8 at
+   0x002d30b8, 0x400 further on - and it transforms the longword
+   with the B2.B1.00.B0 rotate and >> 2 after masking 0xfcfcfcfc,
+   where the earth's takes (v & 0xfefefefe) >> 1 in source order.
+   So this one cannot write LIGHT and the earth's can. Taking the
+   earth's ramp address costs R 1.07 -> 4.06 and B 0.92 -> 2.72
+   [observed].
+
+   The walk in pass 1 is rotated - the index is 0x8080 plus a word
+   that starts at 0x7f80 and wraps - but that works out to the
+   identity for every texel except the first 128.
+
+   PASS 4 IS THE WHOLE OF THE LIGHT PLANE. None of the other passes
+   can write byte +2: the sky's own is zero, ALL 22080 OF FEARTH'S
+   ARE ZERO, and the limb ramp's rotate at 0x002d3228 zeroes it the
+   same way the burst's front ramp does. Texture_GlowLight writes
+   byte +2 and nothing else, and pass 5 then halves it along with
+   the colour.
+
+   PASS 5 IS NOT A HALVE. Its moveq #0,D0 sits OUTSIDE the loop -
+   the dbf target is 0x002d3278 - so D0 carries from texel to texel
+   and the pass is a running smear along the texture's memory order:
+
+       acc = ((acc + texel) & 0xfefefefe) >> 1
+
+   which preserves magnitude rather than dividing it. Read as a
+   halve it costs R 4.06 -> 17.59 and B 1.78 -> 10.23 [observed],
+   because nothing doubled the colour first.
+
+2.1.1.  Texture_GlowLight
+
+   0x002d221a, a clipped circle whose every texel is shaded from
+   two chord angles, two sphere-normal lookups and two Fplasma
+   samples. Called once, (r 0x7f, cx 0x73, cy -2) [verified].
+
+   Per row, with dy running from -r:
+
+       half  = the span half width - section 2.1.2
+       cya   = g_SphereChordAngle[(dy << 8) | r]
+
+   and per texel, with dx running from -half:
+
+       cxa   = g_SphereChordAngle[(dx << 8) | half]
+       n     = g_SphereNormalTable[(cya << 8) | cxa]
+       n     = n with its LOW BYTE less 0x5a
+       n     = g_SphereNormalTable[n]
+       n     = n with its low byte less 0x16, times 8, masked word
+       v     = ring[n * 4]
+       n     = n with its low byte less 0x16, masked word
+       v     = v + ring[n * 4 + 1], a BYTE add that wraps
+       byte +2 = v - 0xf, floored at zero when that goes negative
+
+   EVERY INDEX IS A SIGNED WORD. g_SphereChordAngle takes it raw
+   with no bias, g_SphereNormalTable scaled by 2 from a base of
+   0x0026f97a + 0x10100, and the ring scaled by 4 from Fplasma +
+   0x20200.
+
+   THE RING IS FPLASMA. *g_pRingTexture holds it at exactly its
+   0x40000 bytes, which is why Space_RunReturn frees and re-loads
+   that chunk before the scene - section 1.1. The two readings are
+   one fact.
+
+   The read at 0x002d22b0 is a 68020 MEMORY INDIRECT POST-INDEXED
+   mode, extension word 0x79b7 - base suppressed, index not
+   suppressed, I/IS 7 - so it resolves to *g_pSpanHalfWidth plus
+   the index plus 0x8000, NOT to a pointer fetched from an array
+   at g_pSpanHalfWidth + index. Ghidra renders the index inside
+   the brackets, which reads as pre-indexed and is not what the
+   encoding says.
+
+2.1.2.  The Span Half Width, And Its Off-By-One
+
+   Span_BuildHalfWidth 0x002ca14c fills the 0x10000 byte table
+   every glow in the demo clips its rows with, indexed
+   (dy << 8) + r + 0x8000:
+
+       i = 0 .. 0x7fff   r = i & 0xff, dy = (i >> 8) - 0x80
+                         byte = Math_Isqrt(r * r - dy * dy)
+       then 128 rows     each copied from the row 0x100 BEFORE it
+
+   THE MIRROR IS OFF BY ONE. The upper half is not dy's own chord
+   but the one a row back, so dy = 0 is served by dy = -1 and
+   dy = +64 by dy = -65 [verified]: table[0][63] is 62 where
+   isqrt(63 * 63) is 63, and table[64][113] is 92 where
+   isqrt(113^2 - 64^2) is 93 but isqrt(113^2 - 65^2) is 92.
+
+   It is load bearing beyond clipping, because Texture_GlowLight
+   indexes g_SphereChordAngle with the half width. Correcting it
+   took LIGHT from 3.62 to 3.09 [observed].
+
+2.2.  The Bolides, And The Script That Places Them
+
+   Debris_StepBolide 0x002ce288 walks the block at 0x002ce3f4,
+   stride 0x18, SIX LONGWORDS A RECORD. A NEGATIVE FIRST LONGWORD
+   ENDS THE WALK - there is no count anywhere [verified].
+
+       +0x00   the impact point's x, a plain long
+       +0x04   its y; -1 marks the record dead
+       +0x08   x offset from that point, 16.16
+       +0x0c   y offset, 16.16
+       +0x10   size, 16.16
+       +0x14   a start delay in fields; non-zero skips the record
+
+   THE RECORD HOLDS WHERE THE BODY LANDS, NOT WHERE IT IS. The
+   screen position is the point at +0x00 plus the high word of the
+   offset at +0x08, so a body whose offsets decay toward zero eases
+   into its impact point [verified].
+
+   The VBL hook's mode 5 block at 0x002d5a3a does the easing, and
+   all three terms decay the same way - the value less itself >> 5,
+   so 31/32 of it survives each field:
+
+       +0x14 non-zero   decrement it and do nothing else
+       otherwise        +0x10 -= +0x10 >> 5
+                        and while +0x10 is still >= 0x10000,
+                        +0x08 -= +0x08 >> 5 and +0x0c likewise
+
+   So the body slows as it falls and stops moving once it is under
+   one unit across, while continuing to shrink.
+
+   Debris_StepBolide draws it with Draw_FlareTurbulent through the
+   ramp at 0x002f0c50, at a radius of the size plus Math_Rand(0xa)
+   clamped to 0x7f - which is why a falling body shimmers.
+
+   WHEN THE SIZE'S HIGH WORD REACHES 1 THE RECORD IMPACTS. It writes
+   -1 to +0x04 to kill itself, arms the scorch at 0x002cc4b8 with
+   0x40, reads a triple of words from 0x002ce5a8 indexed by
+   0x002cc4ba, advances that index and calls Debris_SpawnImpact.
+
+   The impact SITES ARE SCRIPTED and the index is shared with the
+   scorch's position table - one impact consumes one entry of both.
+
+   The six scripted bodies, from 0x002ce4e4 [verified]:
+
+       +----------+-----------+--------+--------+-------+
+       | lands at | offset    |  size  | delay  | flag  |
+       +==========+===========+========+========+=======+
+       | 120, 25  | -220, 120 | 200.0  |      0 |     0 |
+       | 110, 30  | -320, -20 | 127.0  |    150 |     0 |
+       | 150, 40  | -320,-200 | 300.0  |    230 |     0 |
+       | 170, 20  | -300, 240 | 320.0  |    290 |     0 |
+       | 110, 10  | -320, 100 | 127.0  |    400 |     0 |
+       | 110, 40  | -200, 240 | 300.0  |    480 |     0 |
+       +----------+-----------+--------+--------+-------+
+
+   The offset is the SECOND column, not a screen position: body
+   one begins at (120-220, 25+120) = (-100, 145) and eases in.
+   Every one of the six starts off the left of the screen.
+
+2.3.  The Impacts
+
+   Debris_SpawnImpact 0x002ce3aa takes the first of six slots at
+   0x002e1374 whose lifetime word is zero and writes seven words:
+
+       +0x00   lifetime 0xfa = 250 fields
+       +0x02   x        the bolide's impact point
+       +0x04   y
+       +0x06   size     0xf at spawn
+       +0x08   the triple read from 0x002ce5a8
+       +0x0a
+       +0x0c
+
+   TWO CLOCKS, AS IN THE BURST. The size at +0x06 is grown by one a
+   field by the mode 5 block at 0x002d5a80, and the lifetime at
+   +0x00 is counted down by the DRAW. A port that draws once a field
+   keeps them in step; one that does not will not.
+
+   Debris_DrawImpacts 0x002ce1e8 draws two things from the one slot.
+   While size >> 2 is below 0x32 - the first 185 fields - it draws
+   Draw_MeteorStreak 0x002d4552 with the shape at 0x002e22e2, at x
+   plus the word at +0x0a. Then it draws the bloom with
+   Draw_GlowBlob at (size >> 2) >> 3 plus 0x19, clamped to 0x28,
+   through the ramp at 0x002f07d8.
+
+   THE STREAK AND THE BLOOM ARE ONE SLOT, not two entities: the
+   streak is simply what the slot looks like early in its life.
+
+2.3.1.  The Streak
+
+   Draw_MeteorStreak 0x002d4552 ADDS TO LIGHT AND NOTHING ELSE.
+   The slot hands it a radius of size >> 2, x plus the slot's
+   +0x0a, the slot's +0x0c as a column step and its +0x08 as a
+   per-row x step, with the ramp at 0x002e22e2 [verified].
+
+   The per-row step is saved to 0x002d4668 before D5 is reused as
+   radius * 2, and added to the centre EVERY ROW with the centre
+   held in 8.8 - which is what leans the streak.
+
+   THE POLAR TABLE IS WALKED LINEARLY. The pointer starts at
+   g_PolarTable + 0x10000 + ((dy << 8) | dx) * 2 and advances 2
+   PLUS the column step each column, so a non-zero step runs
+   through the table faster than the span does and stretches the
+   shape sideways. It also halves the row's half width. Clamping
+   the walk per row would square the streak off; the overrun into
+   the next row is the effect, the same lesson the panorama
+   taught.
+
+   Per texel the walked word's low byte is a distance, that
+   indexes g_BlobFalloff at the row's radius << 8, the falloff
+   indexes the ramp, and the LOW BYTE of that longword >> 2 less
+   radius * 2, floored at zero, is added to LIGHT.
+
+   The six scripted triples at 0x002ce5a8 give the first impact a
+   step of 0 and a lean of 64, which in 8.8 is a quarter pixel a
+   row; only the fifth has a non-zero step [verified].
+
+2.4.  The Sparks
+
+   Debris_DrawSparks 0x002ce19e walks 0x32 = 50 slots of 8 bytes at
+   0x002e11e4: lifetime, x, y, size. A zero lifetime skips the slot.
+   The radius is size >> 1 plus Math_Rand(0xa) and the blob goes
+   through the ramp at 0x002f0a28, a different ramp from the
+   impacts' [verified].
+
+   The random term is added per field rather than stored, so a spark
+   flickers instead of fading smoothly.
+
+   Debris_SpawnSpark 0x002ce34a takes the first free slot and
+   scatters it about the body by the body's OWN radius - a random
+   0x14 less 0xa, times that radius, over 32 - so a big body throws
+   its sparks wide and a small one keeps them close [verified].
+
+   THE TRAIL'S LENGTH IS A DRAW COUNT, NOT A FIELD COUNT, and that
+   is this scene's third two-clock divergence. Spawning is one a
+   draw per live body and the lifetime counts draws, so the demo's
+   trail persists about 2.8 times longer in fields than a port
+   drawing every field manages. Hardware shows it plainly: of
+   the demo's 21 live sparks only 9 are on screen and the rest run
+   back along the body's path to x = -214, well out of frame,
+   while ours are 28 live packed into the last 25 fields of that
+   path [observed].
+
+   The cost is measurable. Our sparks are the single largest
+   remaining LIGHT error at tick 233 - drawing none at all
+   takes LIGHT from 2.24 to 1.85 and empties the two worst blocks
+   of the error map - not because they should not be there, but
+   because the same trail is compressed into a shorter arc and so
+   lies denser.
+
+2.5.  The Scorch
+
+   Debris_BlendScorch 0x002ce084 is gated on 0x002cc4b8, which an
+   impact sets to 0x40. 0x002cc4ba picks an (x, y) pair from the
+   table at 0x002ce578, stored as two longwords with the second
+   shifted left 8 and added to give one pixel offset.
+
+   It covers 64 by 64 pixels AND WRITES THE LIGHT BYTE ONLY. Each
+   pixel is a weighted mean of the frame's own LIGHT and a mask byte
+   from 0x002f1144, the two weights read as a pair of words from
+   0x002f1140 and the sum taken >> 5. The 0x8080 added to A5 is the
+   same patch one buffer along.
+
+   IT IS INVISIBLE IN A PPM CAPTURE. R, G and B are untouched, so
+   any comparison of this scene has to be raw to raw.
+
+   IT WRITES THE TEXTURE, NOT THE FRAME, and it is gated twice:
+   0x002cc4b8 must be non-zero and the byte at 0x002ce15e indexed
+   by it must be non-zero too, so the blend runs on only some of
+   the 0x40 an impact arms. Per texel of the 64 x 64 patch an
+   8-byte record from *g_ScorchWeights gives a source byte offset
+   into the OTHER buffer and two weights:
+
+       LIGHT = (otherLight * w0 + maskByte * w1) >> 5
+
+   and the two buffers are then SWAPPED, so the blend ping-pongs
+   and the mark spreads a little further each time it runs. On the
+   way out it zeroes LIGHT on the 2 x 2 at the patch centre,
+   +0x8080 in, which is the seed the spread grows from. The
+   Math_Rand(0x40) at 0x002ce122 is discarded and only advances
+   the generator.
+
+   ITS TWO TABLES ARE BUILT, NOT BAKED. Scorch_SnapshotMask
+   0x002d32b8 copies the LIGHT byte of all 0x10000 texels of the
+   texture into *g_ScorchMask - at the end of Debris_BuildPlanet
+   and again on every impact, so marks already burned in are part
+   of the next impact's snapshot. Scorch_BuildWeights 0x002cc2d0
+   fills *g_ScorchWeights, 8 bytes a cell [verified]:
+
+       off = (0x20 + sinTerm) * 0x100 + (0x20 + cosTerm)
+       w   = clamp((dist + Math_Rand(0xa) - 0xf) * 2, 0, 0x1f)
+             stored as w then w ^ 0x1f
+
+   where the angle is the cell's own from g_PolarTable, sin and
+   cos are taken at angle << 5, and both are scaled by the cell's
+   distance LESS ONE. THAT MINUS ONE IS THE WHOLE MECHANISM: the
+   sample lands one texel nearer the centre than the cell, so the
+   zeroed seed walks outward a texel per blend.
+
+   The weights summing to 0x1f against the blend's >> 5 means
+   EVERY PASS MULTIPLIES LIGHT BY 31/32, which is what fades the
+   mark as it spreads.
+
+   THE BLEND RATE IS A SECOND TWO-CLOCK DIVERGENCE. The gate runs
+   it on 25 of the 0x40 counts an impact arms, once per DRAW.
+   Tick 186 is 42 fields past its impact with only 14 draws
+   taken, so the demo had run 8 gated passes where a port drawing
+   every field has run 18. 31/32 to those powers is 0.774 against
+   0.566, a ratio of 0.73 - and the mark reads ~44 against the
+   demo's saturated 63 there, which is 0.70 [observed]. The
+   arithmetic is right; the rate is ours.
+
+3.  The Tables
+
+       0x002ce3f4   the live bolide block, 0x18 a record
+       0x002ce4e4   the bolide SCRIPT, copied into the above by
+                    Debris_SetupScene record by record until a
+                    negative first longword
+       0x002ce578   the scorch positions, two longwords a pair
+       0x002ce5a8   the impact triples, 8 bytes an entry
+       0x002e11e4   50 spark slots of 8 bytes
+       0x002e1374   6 impact slots of 0xe bytes
+       0x002e22e2   the meteor streak's shape
+       0x002f07d8   the impact bloom's ramp
+       0x002f0a28   the spark's ramp
+       0x002f0c50   the falling body's ramp
+       0x002f1140   the scorch's weight pairs
+       0x002f1144   the scorch's mask
+
+   0x002cc4b8 is the scorch's countdown and 0x002cc4ba the shared
+   index into 0x002ce578 and 0x002ce5a8. Debris_SetupScene clears
+   both and zeroes the six impact lifetimes.
+
+4.  The Reconstruction
+
+   src/part_debris.c, registered as part 2.16. IT NEEDS RELIC.DAT -
+   the planet's overlay is Fearth, and without -dat the part reports
+   ready=0 and draws nothing.
+
+   Most of what it needs was already in src/: Draw_GlowBlob,
+   Draw_FlareTurbulent and Turbulence_BuildTable in gfx.c and
+   Warp_FullscreenRotate in orb.h. New here are the bolide script,
+   the three entity tables, the ember ramp and the scene's own
+   planet build.
+
+   DEBRIS_BUILDPLANET IS NOT EARTH_BUILDTEXTURE and the two are kept
+   separate. They share the remap bias 0x118, the mask 0x3ffff, the
+   0x5c x 0xf0 stamp at 0x8c00 and the limb's 100 x 250 walk, but
+   they differ twice [verified]:
+
+       the limb's x origin   0x2a0 here, 0x280 at 0x002d3026
+       a red tint            BOTH of this one's first two passes
+                             add 0x10000000 to the longword, which
+                             is +0x10 on R alone. The earth's two
+                             passes add nothing.
+
+   The red tint is most of the scene's look. Without it the planet
+   renders as the ordinary blue earth and R scores 19.63 against
+   hardware; with it, 5.23.
+
+   Scored against hardware at our tick 11, raw to raw [observed]:
+
+           R 1.07   G 0.95   LIGHT 3.09   B 0.92
+
+   with 5089 of 16000 pixels byte identical, and against hardware
+   at our tick 186 - 40 fields past the first impact -
+
+           R 0.46   G 0.47   LIGHT 1.78   B 0.46
+
+   with 10141 of 16000 byte identical, and against hardware at
+   our tick 233
+
+           R 0.86   G 0.79   LIGHT 2.24   B 0.74
+
+   [observed]. TICK 233 IS FIELD 233 ON THREE INDEPENDENT
+   COUNTS: its warp counter reads 0x4d1 against a staged 0x3e8,
+   its first impact's size of 102 is 87 fields past a spawn at
+   146, and its second body's offset and size are bit for bit
+   what the recurrence gives at 83 steps from a start at 151.
+
+   The first is tick 10 or 11 of the scene: body one's offset has
+   decayed from 0xff240000 to 0xff5fd866, a ratio of 0.737, and
+   (31/32)^n = 0.737 gives n = 9.6.
+
+5.  Open questions
+
+   -  WHAT THE IMPACT'S +0x08 TRIPLE IS FOR. Debris_SpawnImpact
+      stores three words read from 0x002ce5a8 and Debris_DrawImpacts
+      loads +0x08 into D5 before the streak block. Where D5 is
+      consumed is not read, and +0x0c reaches Draw_MeteorStreak as
+      D4 without its meaning being established.
+
+   -  HOW MANY BLEND PASSES A PORT SHOULD RUN. Section 2.5's rate
+      is the burst's question again: the demo ties the spread to
+      its draw and does not hold a field rate, and a port drawing
+      every field fades the mark about a third further. Matching
+      the pass count instead is worse overall - scored against
+      tick 186 it costs LIGHT 1.78 -> 5.73 - because the bloom
+      and the streak both key off the field-driven size. Nothing
+      may be tuned to a capture to settle it.
+
+   -  THE STREAK HELPS BUT IS NOT PROVED. Drawing it improves both
+      points - LIGHT 2.37 to 2.21 at tick 233 and 2.17 to 1.78
+      at tick 186 - so its sign and rough magnitude are right
+      [observed]. Nothing yet separates it from the bloom and the
+      scorch it sits inside, so an error in its shape would not
+      show.
+
+   -  WHAT IS LEFT OF THE FRAME'S LIGHT. The texture is right -
+      64 of 64 sampled texels of its LIGHT plane are byte exact
+      against the demo, and R, G and B are 61, 63 and 61 of 64
+      with nothing off by more than 2 [observed]. The frame still
+      scores LIGHT 3.09 where its other channels are near 1, so
+      what remains is drawn per field rather than baked: the
+      sparks and the falling bodies, whose positions are seeded
+      from a different RNG.
+
+   -  WHAT 0x002e0c7e CONTRIBUTES TO THE GLOW. g_FlareGrow is read
+      into D5 at 0x002d229e and D5 is never used again in the
+      routine, so it is taken as dead and not transcribed.
+
+   -  OUR LIGHT PEAKS AT 64 AGAINST THE DEMO'S 63, so something in
+      the frame adds to LIGHT without saturating. One pixel, but it
+      is the same class of fault the burst's front ramp had.
+
+   -  THE TWO LIMB GLOWS TRANSFORM THEIR RAMP DIFFERENTLY, and only
+      the clamp is in doubt. Earth_BuildTexture takes the halo ramp
+      longword as (v & 0xfefefefe) >> 1 IN SOURCE ORDER at
+      0x002d310a - every byte, LIGHT included - where this scene
+      rotates it to B2.B1.00.B0 and takes >> 2 at 0x002d3228. So
+      part_earth.c's byte handling is correct for its own routine.
+
+      What neither matches is the add: both demo routines do a plain
+      add.l with no saturation, and part_earth.c clamps each byte at
+      CHAN_MAX. The debris build clamps at 0xff instead, which is
+      nearer but still not a long add. Whether a carry between bytes
+      ever happens here is not established.
+
+   -  WHAT 0x002d32b8 AND 0x002d3136 DO. Both are called once each -
+      the first on impact, the second from the scene's setup - and
+      neither is read.

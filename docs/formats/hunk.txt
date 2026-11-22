@@ -1,0 +1,375 @@
+PCDEMOS RELIC                                              Analysis Note
+
+
+                      THE AMIGADOS LOAD FILE
+
+
+Abstract
+
+   RELIC is a stock AmigaDOS hunk load file, 1,851,760 bytes, seven
+   hunks, 6,605 relocations, not crunched [verified]. Section 2 is a
+   block-by-block reading of the file; tools/hunk/hunkdump.py
+   reproduces it and ends at exactly the file size.
+
+   Section 3 is the reason this document exists first. The
+   ghidra-amiga extension could not read the file at all, and the
+   cause is a one-line signed-integer bug in the loader rather than
+   anything unusual about RELIC.
+
+Table of Contents
+
+   1. The format
+   2. RELIC's hunks
+      2.1. The HUNK_HEADER allocation table
+      2.2. The block sequence
+      2.3. File offset to image address
+   3. The Ghidra loader bug
+      3.1. What it looks like
+      3.2. The cause
+      3.3. The fix, and the fallback
+   4. What the structure proves
+   5. Open questions
+
+1.  The format
+
+   A hunk load file is a sequence of big-endian longword-tagged
+   blocks. A load file opens with HUNK_HEADER (0x3F3), which declares
+   how many hunks there are and how much memory each one needs, and is
+   followed by one block group per hunk: a HUNK_CODE, HUNK_DATA or
+   HUNK_BSS carrying the content, then any relocation, symbol and
+   debug blocks, then HUNK_END.
+
+   The block types that appear in this file:
+
+   +-------+----------------+----------------------------------------------+
+   | Tag   | Name           | Payload                                      |
+   +=======+================+==============================================+
+   | 0x3F3 | HUNK_HEADER    | resident library names, then the size table  |
+   +-------+----------------+----------------------------------------------+
+   | 0x3E9 | HUNK_CODE      | size in longwords, then that many longwords  |
+   +-------+----------------+----------------------------------------------+
+   | 0x3EB | HUNK_BSS       | size in longwords, and NO file data          |
+   +-------+----------------+----------------------------------------------+
+   | 0x3EC | HUNK_RELOC32   | (count, target hunk, count x offset) runs,   |
+   |       |                | terminated by a zero count                   |
+   +-------+----------------+----------------------------------------------+
+   | 0x3F2 | HUNK_END       | nothing; closes the hunk                     |
+   +-------+----------------+----------------------------------------------+
+
+   THE MEMORY FLAGS ARE THE WHOLE STORY OF SECTION 3. Every size
+   longword carries the requested memory pool in its top two bits, and
+   the size in the remaining 30:
+
+   +-------+------------+------------------------------------------------+
+   | Bits  | Value      | Meaning                                        |
+   +=======+============+================================================+
+   | 00    | 0x00000000 | MEMF_ANY - any memory will do                  |
+   +-------+------------+------------------------------------------------+
+   | 01    | 0x40000000 | MEMF_CHIP - must be chip RAM                   |
+   +-------+------------+------------------------------------------------+
+   | 10    | 0x80000000 | MEMF_FAST - must be fast RAM                   |
+   +-------+------------+------------------------------------------------+
+   | 11    | 0xC0000000 | an extended-flags longword FOLLOWS the size    |
+   +-------+------------+------------------------------------------------+
+
+   Flags 10 and 11 set bit 31. That is the bit the Ghidra loader trips
+   over.
+
+   The size is in LONGWORDS, not bytes. Multiply by four.
+
+2.  RELIC's hunks
+
+2.1.  The HUNK_HEADER allocation table
+
+   The header is 48 bytes, file 0x000000 to 0x00002f. The resident
+   library name list is empty - one zero longword at file 0x000004 -
+   then table_size 7, first_hunk 0, last_hunk 6, then seven sizes
+   [verified].
+
+   +------+------------+------------+-----------+-----------+
+   | Hunk | Raw        | Longwords  | Bytes     | Pool      |
+   +======+============+============+===========+===========+
+   | 0    | 0x8002a25f |    172,639 |   690,556 | MEMF_FAST |
+   +------+------------+------------+-----------+-----------+
+   | 1    | 0x800001c2 |        450 |     1,800 | MEMF_FAST |
+   +------+------------+------------+-----------+-----------+
+   | 2    | 0x4000006c |        108 |       432 | MEMF_CHIP |
+   +------+------------+------------+-----------+-----------+
+   | 3    | 0x8001cefb |    118,523 |   474,092 | MEMF_FAST |
+   +------+------------+------------+-----------+-----------+
+   | 4    | 0x80001ce2 |      7,394 |    29,576 | MEMF_FAST |
+   +------+------------+------------+-----------+-----------+
+   | 5    | 0x400091ca |     37,322 |   149,288 | MEMF_CHIP |
+   +------+------------+------------+-----------+-----------+
+   | 6    | 0x8001f2c0 |    127,680 |   510,720 | MEMF_FAST |
+   +------+------------+------------+-----------+-----------+
+
+   Five hunks are MEMF_FAST and two are MEMF_CHIP. No hunk uses the
+   extended form, so nothing in this file is followed by an extra
+   flags longword.
+
+   THE SIZES IN THIS TABLE ARE THE ONES THE LOADER USES, not the sizes
+   in the HUNK_CODE blocks. HunkLoadSegFile.java:121 overwrites each
+   segment's size with the header's entry, so a segment is as large as
+   the header asks for and the block data is copied into a zero-filled
+   buffer of that size [verified].
+
+   That matters for hunks 3 and 6, where the header asks for one
+   longword more than the block supplies:
+
+   +------+------------------+------------------+--------------------+
+   | Hunk | Header bytes     | Block bytes      | Trailing zeros     |
+   +======+==================+==================+====================+
+   | 3    |          474,092 |          474,088 |                  4 |
+   +------+------------------+------------------+--------------------+
+   | 6    |          510,720 |          510,716 |                  4 |
+   +------+------------------+------------------+--------------------+
+
+   Four zero bytes at the end of each of those two segments are
+   allocation slack, not content. Every other hunk's header size and
+   block size agree exactly.
+
+2.2.  The block sequence
+
+   Every block in file order [verified]. Parsing ends at 0x1c4170,
+   which is the file size, so there is no trailing data and nothing is
+   truncated.
+
+    file off  block           payload
+    --------  --------------  -----------------------------------------
+    0x000000  HUNK_HEADER     7 hunks, table above
+    0x000030  HUNK_CODE       172,639 lw, data 0x000038..0x0a89b3
+    0x0a89b4  HUNK_RELOC32    238 offsets
+    0x0a8d9c  HUNK_END
+    0x0a8da0  HUNK_BSS        450 lw, no file data
+    0x0a8da8  HUNK_END
+    0x0a8dac  HUNK_CODE       108 lw, data 0x0a8db4..0x0a8f63
+    0x0a8f64  HUNK_END
+    0x0a8f68  HUNK_CODE       118,522 lw, data 0x0a8f70..0x11cb57
+    0x11cb58  HUNK_RELOC32    4,302 offsets
+    0x120eb8  HUNK_END
+    0x120ebc  HUNK_BSS        7,394 lw, no file data
+    0x120ec4  HUNK_END
+    0x120ec8  HUNK_CODE       37,322 lw, data 0x120ed0..0x1455f7
+    0x1455f8  HUNK_END
+    0x1455fc  HUNK_CODE       127,679 lw, data 0x145604..0x1c20ff
+    0x1c2100  HUNK_RELOC32    2,065 offsets
+    0x1c416c  HUNK_END
+
+   There are NO HUNK_SYMBOL and NO HUNK_DEBUG blocks, so the file
+   carries no names of its own. Every name in the Ghidra database is
+   either ours or supplied by the extension's .fd library definitions.
+
+   Hunks 2 and 5 carry no relocations at all, which is one piece of
+   evidence that they are data rather than code despite both being
+   tagged HUNK_CODE.
+
+2.3.  File offset to image address
+
+   The loader places segments sequentially from DEF_IMAGE_BASE =
+   0x21F000 [verified, AmigaHunkLoader.java:56], in header order, each
+   starting where the previous one ended with no alignment padding
+   [verified, Relocate.java:30].
+
+   THIS TABLE IS CONFIRMED AGAINST THE DATABASE [verified]. The
+   import produced exactly these seven blocks at exactly these
+   addresses, named CODE_00, BSS_01, CODE_02, CODE_03, BSS_04,
+   CODE_05 and CODE_06. The extension adds four blocks of its own
+   that are not part of the file: EXEC at 0x00000004, dos_library at
+   0x003e5000, exec_library at 0x003e6000 and Custom at 0x00dff000.
+
+    seg  type file_lo  file_hi  img_lo     img_hi         bytes img-file
+    ---- ---- -------- -------- ---------- ---------- --------- ----------
+    SEG0 CODE 0x000038 0x0a89b3 0x0021f000 0x002c797b   690,556 +0x21efc8
+    SEG1 BSS  -        -        0x002c797c 0x002c8083     1,800 -
+    SEG2 CODE 0x0a8db4 0x0a8f63 0x002c8084 0x002c8233       432 +0x21f2d0
+    SEG3 CODE 0x0a8f70 0x11cb57 0x002c8234 0x0033be1f   474,092 +0x21f2c4
+    SEG4 BSS  -        -        0x0033be20 0x003431a7    29,576 -
+    SEG5 CODE 0x120ed0 0x1455f7 0x003431a8 0x003678cf   149,288 +0x2222d8
+    SEG6 CODE 0x145604 0x1c20ff 0x003678d0 0x003e43cf   510,720 +0x2222cc
+
+   The image spans 0x0021f000 to 0x003e43cf, 1,856,464 bytes. The
+   entry point is the start of SEG0, 0x0021f000, which the loader
+   labels as a function named start.
+
+   THE img-file COLUMN IS PER SEGMENT AND THERE IS NO SINGLE DELTA.
+   Each hunk's data begins after its own block header, and the two BSS
+   hunks occupy image space while occupying no file space at all, so
+   the offset drifts by 0x3304 across the file. Converting a file
+   offset by adding one constant is wrong for five of the seven
+   segments.
+
+3.  The Ghidra loader bug
+
+3.1.  What it looks like
+
+   Importing the stock file with ghidra-amiga 12.0.4 fails before a
+   single byte is mapped:
+
+    hunk.HunkParseError: HUNK_HEADER contains invalid hunk_size
+            at hunk.HunkHeaderBlock.parse(HunkHeaderBlock.java:52)
+            at hunk.HunkBlockFile.parse(HunkBlockFile.java:35)
+            at amiga.AmigaHunkLoader.load(AmigaHunkLoader.java:106)
+
+   followed by a second, unrelated-looking exception:
+
+    java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds
+    for length 0
+            at amiga.AmigaHunkLoader.loadExecutable(AmigaHunkLoader.java:176)
+
+   THE SECOND EXCEPTION IS NOT A SECOND BUG. AmigaHunkLoader.load
+   catches the parse error, logs it, and calls loadExecutable anyway
+   with an empty segment list; line 176 is the first access to
+   addrs[0]. Fixing the first makes the second disappear [verified].
+
+3.2.  The cause
+
+   HunkHeaderBlock.java reads each allocation size with
+   reader.readNextInt(), which returns a SIGNED Java int, and rejects
+   a negative value:
+
+    int hunkSize = reader.readNextInt();
+
+    if (hunkSize < 0) {
+        throw new HunkParseError("HUNK_HEADER contains invalid hunk_size");
+    }
+
+    hunkTable.add(hunkSize & 0x3FFFFFFF);
+
+   MEMF_FAST is 0x80000000, so every MEMF_FAST hunk reads back
+   negative and aborts the import. RELIC's hunk 0 is the first one in
+   the table and it is MEMF_FAST, so the failure is immediate.
+
+   The line immediately after the check masks the flags off with
+   0x3FFFFFFF. That is the proof the check is a mistake rather than a
+   constraint: the author already knew bits 30-31 were flags.
+
+   The check is a direct port of amitools' hunk.py, where _read_long
+   returns -1 at end of file and "if hunk_size < 0" is the EOF test.
+   Python has no fixed-width signed int, so in the original the test
+   catches only a short read. In Java it catches half the legal
+   address space.
+
+   This is a defect in the loader, not in RELIC. A hunk flagged
+   MEMF_FAST is ordinary - it is what a linker emits for anything that
+   does not have to be reachable by the blitter - and the extension
+   rejects every such file.
+
+3.3.  The fix, and the fallback
+
+   Two independent routes exist and they produce the same program.
+   MEMORY FLAGS DO NOT AFFECT LAYOUT: Relocate.getSeqAddresses places
+   segments sequentially from the image base whatever the flags say,
+   and nothing else in the loader reads them [verified]. So the
+   addresses in section 2.3 hold either way.
+
+   THE FIX - repair the extension:
+
+    py -3.10 tools/ghidra/fix_amiga_loader.py --check
+    py -3.10 tools/ghidra/fix_amiga_loader.py
+    py -3.10 tools/ghidra/fix_amiga_loader.py --restore
+
+   It drops the check, and additionally consumes the extra longword
+   that flags value 3 places after the size - without which every
+   later field in a header using the extended form reads one longword
+   short. It recompiles hunk/HunkHeaderBlock.java against the shipped
+   source zip and replaces that one class in ghidra-amiga.jar, keeping
+   the pristine jar as ghidra-amiga.jar.orig. Ghidra must be closed,
+   and must be restarted afterwards.
+
+   A GHIDRA OR EXTENSION REINSTALL SILENTLY REVERTS IT and the import
+   starts failing again with the same message. --check first.
+
+   THE FALLBACK - clear the flags in a copy of the binary:
+
+    py -3.10 tools/hunk/hunk_memf_any.py reverse/ghidra/relic \
+                                         reverse/patched/relic_anymem
+
+   That writes reverse/patched/relic_anymem. Exactly seven bytes
+   differ from the stock file - the high byte of each size longword at
+   0x14, 0x18, 0x1c, 0x20, 0x24, 0x28 and 0x2c - and every other byte,
+   including all code and all 6,605 relocations, is identical
+   [verified]. It imports into a stock extension.
+
+   THE FILE IS NOT KEPT. reverse/patched/ is gitignored, because it is
+   the original with seven bytes changed and redistributing it would
+   redistribute the original. Regenerate it with the command above
+   when a stock extension has to be used; the MD5 below is how to
+   check the result.
+
+   +--------------------------+----------------------------------+
+   | File                     | MD5                              |
+   +==========================+==================================+
+   | reverse/ghidra/relic     | b5c59ae6379d92131ce660a2027b77b7 |
+   +--------------------------+----------------------------------+
+   | reverse/patched/         | 5be1e407ec1895f2160a5cb05e13d769 |
+   | relic_anymem             |                                  |
+   +--------------------------+----------------------------------+
+
+   The flags are a request to AmigaOS for which RAM pool to allocate
+   from. Clearing them would change how the demo runs on real
+   hardware; it changes nothing about how it disassembles. DO NOT RUN
+   relic_anymem - use the stock file for that.
+
+   A THIRD ROUTE IS A TRAP WORTH NAMING: the loader's error message
+   invites the conclusion that the header is damaged and should be
+   rebuilt. It is not damaged. hunkdump.py parses it to the exact byte
+   count of the file, and every block size and relocation run is
+   self-consistent. Nothing about this file needs repairing.
+
+4.  What the structure proves
+
+   RELIC IS NOT CRUNCHED [verified]. The evidence:
+
+   o Seven hunks, two of them BSS. A cruncher produces one small code
+     hunk and one opaque data hunk.
+   o 6,605 RELOC32 entries across three hunks. A crunched file has
+     almost none, because the crunched blob holds no pointers the
+     loader can see.
+
+     AND THAT MEANS A POINTER READ OUT OF THE FILE IS NOT AN ADDRESS.
+     Every relocated longword holds an offset from its target hunk's
+     start, and the loader adds the segment base. A jump table read
+     straight out of the file therefore yields values in no segment at
+     all: entry 15 of the Sprout walk table at 0x002d71b0 reads
+     0x0000f540 on disk and 0x002d7774 once loaded, the difference
+     being CODE_03's base. tools/sprout/walkdecode.py adds it back;
+     anything else reading a pointer table from the bytes has to do
+     the same.
+   o Library name strings in the clear at SEG0+0x1825e and
+     SEG0+0x1826a - dos.library and graphics.library - plus 724
+     readable printable runs in hunk 0.
+   o The entry point is a conventional AmigaDOS startup: move.l 4,a6
+     to fetch AbsExecBase, then OpenLibrary calls.
+
+   So there is no depacking stage in this project, and no packed image
+   to distinguish an address from.
+
+   THE DEMO IS 68020+, AND THE LOADER DOES NOT KNOW IT.
+   findSupportedLoadSpecs offers only 68000:BE:32:default
+   [verified, AmigaHunkLoader.java:98], while the demo's own
+   requirements screen tests for a 68020 and AGA [verified,
+   SEG0+0x0183b7 and SEG0+0x0183e4]. Import as 68000:BE:32:MC68020 by
+   changing the language in the import dialog.
+
+   This matters more than it sounds. A 68000 disassembler does not
+   reject a 68020 instruction, it decodes it as something else:
+   bfextu and the other bitfield operations, muls.l and divs.l,
+   scaled-index and memory-indirect addressing modes all become
+   plausible nonsense, and the only symptom is a listing that does not
+   quite make sense.
+
+5.  Open questions
+
+   o The segment map in 2.3 is computed, not observed. Check it
+     against the database after the first successful import and
+     correct this document from what Ghidra reports.
+   o Hunks 2 and 5 are tagged HUNK_CODE and carry no relocations. 432
+     bytes of MEMF_CHIP in hunk 2 is the size of a small copper list
+     or a sprite set rather than of code; 149,288 bytes of MEMF_CHIP
+     in hunk 5 is bitplane-sized. Neither has been looked at.
+   o Why hunks 3 and 6 ask for one longword more than they supply is
+     unknown. It is almost certainly a linker artefact and it affects
+     nothing, but it is the only internal inconsistency in the file.
+   o Whether the extension's resident-library handling matters here is
+     untested; the name list is empty, so probably not.
