@@ -483,6 +483,20 @@ static s32 cr_orb_clamp(s32 r)
 	return r;
 }
 
+/* OURS - A RATIO STEP STALLS ON A SMALL INTEGER, and this is the one
+ * value here small enough to reach that: 2 * 5 / 4 truncates back to
+ * 2, so the radius has fixed points at 2 and 3 and cannot be wound
+ * back in from either. One unit is the floor on a notch. The dollies
+ * are distances in the thousands and never come near it. */
+static s32 cr_orb_zoom(s32 r, int in)
+{
+	s32 n = in ? (r * CR_STEP_DEN) / CR_STEP_NUM
+	           : (r * CR_STEP_NUM) / CR_STEP_DEN;
+
+	if (n == r) n = in ? r + 1L : r - 1L;
+	return cr_orb_clamp(n);
+}
+
 /* OURS. THE SIZE IS THE STATE, NOT THE NOTCH COUNT. Clamping a count
  * against the stops instead lets it keep winding past one and then
  * hands back that much dead travel on the way out. A notch in means
@@ -501,8 +515,7 @@ static void cr_wheel(void)
 	g_wheel = n;
 	while (d > 0L) {
 		if (g_char == CR_ORB)
-			g_orb_r = cr_orb_clamp((g_orb_r * CR_STEP_DEN)
-			                       / CR_STEP_NUM);
+			g_orb_r = cr_orb_zoom(g_orb_r, 1);
 		else if (g_char == CR_ARK)
 			g_ark_depth = cr_ark_clamp((g_ark_depth * CR_STEP_NUM)
 			                           / CR_STEP_DEN);
@@ -514,8 +527,7 @@ static void cr_wheel(void)
 	}
 	while (d < 0L) {
 		if (g_char == CR_ORB)
-			g_orb_r = cr_orb_clamp((g_orb_r * CR_STEP_NUM)
-			                       / CR_STEP_DEN);
+			g_orb_r = cr_orb_zoom(g_orb_r, 0);
 		else if (g_char == CR_ARK)
 			g_ark_depth = cr_ark_clamp((g_ark_depth * CR_STEP_DEN)
 			                           / CR_STEP_NUM);
