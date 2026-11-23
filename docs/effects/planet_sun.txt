@@ -257,6 +257,14 @@ Table of Contents
           + (((g_SunRange >> 8) ^ 0x7f) >> 5)
        if (D4 >= 3) return
 
+   The widths are 32-bit throughout [verified, 0x002cf2c2]: each
+   square is a muls.l that keeps the low longword, the sum can wrap,
+   and Math_Isqrt (0x002ca766) reads it as UNSIGNED - an exact
+   floor root of all 32 bits [verified, emulated against math.isqrt
+   over 662,143 inputs]. The range term's final shift is lsr.l, not
+   asr.l. A wrapped sum therefore gives a large root and shuts the
+   gate; reading it as signed instead opens it.
+
    It is the gate, and it is also the shift the sprite blitters
    apply - so 0 draws at full brightness, 1 at half, 2 at a quarter
    and 3 or more draws nothing. The flare fades IN rather than being
@@ -310,7 +318,7 @@ Table of Contents
    +=====================+=======================+==================+
    | Flare_GhostFar      | 0x3c - 2*(p - 0x3c)   | 32x32, ghost32a  |
    +---------------------+-----------------------+------------------+
-   | Flare_GhostNear     | 0x3c - (p - 0x3c)/2   | 32x32, ghost32b  |
+   | Flare_GhostNear     | 0x3c - (p - 0x3c)>>1  | 32x32, ghost32b  |
    +---------------------+-----------------------+------------------+
    | Flare_GhostMirror   | 0x3c - (p - 0x3c)     | 16x16, ghost16   |
    +---------------------+-----------------------+------------------+
@@ -318,7 +326,15 @@ Table of Contents
    +---------------------+-----------------------+------------------+
 
    So the chain lies on the line through the pivot at -2, -1/2, -1
-   and +2, which is how a real lens flare's ghosts behave.
+   and +2, which is how a real lens flare's ghosts behave. The half
+   is asr.l #1 [verified, 0x002cf3b6], which floors, so a negative
+   odd offset lands one pixel further out than a truncating divide.
+
+   Sprite_Add32x32 and Sprite_Add16x16 take the centre as a WORD
+   (subi.w at 0x002cf3d0) and clip it against all four edges of the
+   160 x 100 frame. A centre beyond 16 bits therefore wraps in the
+   original; that is reachable only with a camera the demo never
+   turns that far.
 
    THE EIGHTH PASS IS A GLARE BAND ACROSS THE SUN, not a horizon.
    0x002d2530 lays ten rows starting seven above the MEAN ROW of the

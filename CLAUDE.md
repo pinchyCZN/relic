@@ -889,6 +889,15 @@ it looks like zoomed.
 `stdint.h`, no VLAs, no `inline`. Fixed-width types come from a project
 header, so `u8`/`s16`/`u32` are ours and spelled once.
 
+**`s64` IS ALLOWED, and is the one exception.** C89 has no 64-bit
+type, but the 68020's `muls.l` makes a 64-bit product, so a
+32x32 multiply that must not wrap is the original's width, not a
+convenience. `relic.h` declares it with `__extension__` so clang's
+`-pedantic` stays quiet. Do not hand-split a multiply into 16-bit
+halves to avoid it - `FX_MUL` used to wrap at about 4,550 demo units
+at 7.2x, and that overflow is what made a sprite write before the
+frame buffer.
+
 **TABS INDENT, SPACES ALIGN** in every `.c` and `.h`. One tab per
 nesting level, then spaces out to the column a wrapped parameter list
 or continued statement lines up under, so it holds at any tab width.

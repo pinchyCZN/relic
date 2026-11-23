@@ -59,7 +59,10 @@ u8   Gfx_PolarAngle(s32 dx, s32 dy);
 
 /* ORIGIN 0x002ca766  Math_Isqrt - restoring integer square root.
  * Kept rather than reduced to a library call because the demo's own
- * rounding is what the bolt amplitude and the flare radius use. */
+ * rounding is what the bolt amplitude and the flare radius use.
+ * Gfx_IsqrtU is the routine at its own width, unsigned 32-bit;
+ * Gfx_Isqrt is ours on top, returning 0 for n <= 0. */
+u32  Gfx_IsqrtU(u32 n);
 s32  Gfx_Isqrt(s32 n);
 
 /* ORIGIN 0x002cfe38 - the demo's LCG, and the only randomness in

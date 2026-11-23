@@ -170,14 +170,14 @@ u8 Gfx_BlobFalloff(s32 radius, s32 dist)
 }
 u8 Gfx_PolarAngle(s32 dx, s32 dy) { return polar_word(dx, dy)[0]; }
 
-/* ORIGIN 0x002ca766  Math_Isqrt */
-s32 Gfx_Isqrt(s32 n)
+/* ORIGIN 0x002ca766  Math_Isqrt - the demo's width: all 32 bits,
+ * unsigned. */
+u32 Gfx_IsqrtU(u32 n)
 {
-	s32 rem = 0, root = 0;
+	u32 rem = 0, root = 0;
 	int i;
-	if (n <= 0) return 0;
 	for (i = 0; i < 16; i++) {
-		rem = (rem << 2) | ((n >> (30 - 2 * i)) & 3L);
+		rem = (rem << 2) | ((n >> (30 - 2 * i)) & 3UL);
 		root <<= 1;
 		if (rem > 2 * root) {
 			rem -= 2 * root + 1;
@@ -185,6 +185,13 @@ s32 Gfx_Isqrt(s32 n)
 		}
 	}
 	return root;
+}
+
+/* OURS. Math_Isqrt for a signed argument; a radius^2 - d^2 that
+ * went negative is outside the circle, and its chord is 0. */
+s32 Gfx_Isqrt(s32 n)
+{
+	return n <= 0 ? 0 : (s32)Gfx_IsqrtU((u32)n);
 }
 
 void Gfx_SeedRand(u32 seed) { g_rand_state = seed; }

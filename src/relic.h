@@ -19,6 +19,16 @@ typedef signed short    s16;
 typedef unsigned long   u32;
 typedef signed long     s32;
 
+/* Not C89: muls.l's 64-bit product. __extension__ quiets -pedantic.
+ * See CLAUDE.md rule 16. */
+#if defined(_MSC_VER)
+typedef __int64         s64;
+#elif defined(__GNUC__)
+__extension__ typedef long long s64;
+#else
+typedef long long       s64;
+#endif
+
 /* THE AMIGA IS BIG-ENDIAN AND A MODERN PC IS NOT. Every multi-byte
  * read out of the demo's own data goes through these, never through
  * a cast to a wider pointer. */
@@ -95,7 +105,7 @@ typedef struct {
 /* 16.16 helpers. The demo works in 16.16 and 24.8 in different
  * places; these are only for the viewer's own scaling. */
 #define FX_ONE      ((s32)0x10000)
-#define FX_MUL(a,b) ((s32)(((s32)(a) * (s32)(b)) >> 16))
+#define FX_MUL(a,b) ((s32)(((s64)(a) * (s64)(b)) >> 16))
 #define FX_DIV(a,b) ((s32)((((s32)(a)) << 16) / (s32)(b)))
 
 /* PIXELS BACK TO DEMO UNITS. An int over a 16.16 scale is ALREADY

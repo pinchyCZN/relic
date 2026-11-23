@@ -697,20 +697,23 @@ static void blit_additive(Relic_Frame *f, const u8 *spr, s32 side,
 void Space_DrawFlareGhosts(Relic_Frame *f, s32 fx, s32 fy)
 {
 	s32 dx = fx - 0x50, dy = fy - 0x40;
+	s32 shift;
+
 	/* THE DISTANCE TERM IS ALWAYS ZERO ON A 160 x 100 SCREEN and that
 	 * is the original's arithmetic, not a slip here: the furthest two
 	 * points are about 190 apart, Math_Isqrt returns a plain root, and
 	 * the >>8 crushes anything under 256 to nothing. g_SunRange alone
-	 * decides the gate. */
-	s32 shift = (Gfx_Isqrt(dx * dx + dy * dy) >> 8)
-	          + (((g_sun_range >> 8) ^ 0x7f) >> 5);
+	 * decides the gate. The sum is u32, as muls.l leaves it: signed, a
+	 * wrapped sum roots to 0 and opens it - effects/planet_sun.txt 6. */
+	shift = (s32)(Gfx_IsqrtU((u32)dx * (u32)dx + (u32)dy * (u32)dy) >> 8)
+	      + (s32)((((u32)(g_sun_range >> 8)) ^ 0x7fUL) >> 5);
 
 	if (shift >= 3) return;
 
 	sprite_add(f, g_ghost32a, 32,
 	           0x3c - 2 * (fx - 0x3c), 0x3c - 2 * (fy - 0x3c), shift);
 	sprite_add(f, g_ghost32b, 32,
-	           0x3c - (fx - 0x3c) / 2, 0x3c - (fy - 0x3c) / 2, shift);
+	           0x3c - ((fx - 0x3c) >> 1), 0x3c - ((fy - 0x3c) >> 1), shift);
 	sprite_add(f, g_ghost16, 16,
 	           0x3c - (fx - 0x3c), 0x3c - (fy - 0x3c), shift);
 	sprite_add(f, g_ghost16, 16,
