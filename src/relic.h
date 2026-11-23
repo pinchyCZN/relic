@@ -106,7 +106,7 @@ typedef struct {
  * places; these are only for the viewer's own scaling. */
 #define FX_ONE      ((s32)0x10000)
 #define FX_MUL(a,b) ((s32)(((s64)(a) * (s64)(b)) >> 16))
-#define FX_DIV(a,b) ((s32)((((s32)(a)) << 16) / (s32)(b)))
+#define FX_DIV(a,b) ((s32)(((s64)(a) * 0x10000) / (s32)(b)))
 
 /* PIXELS BACK TO DEMO UNITS. An int over a 16.16 scale is ALREADY
  * whole demo units; shifting down again floors every offset to
@@ -120,7 +120,7 @@ typedef struct {
  * docs/effects/orb.txt 5. */
 #define DEMO_FRAC          4
 #define SCALE_F(s)         ((s32)(s) >> DEMO_FRAC)
-#define PX_TO_DEMO_F(px,s) ((s32)(((s32)(px) << 16) / SCALE_F(s)))
+#define PX_TO_DEMO_F(px,s) ((s32)(((s64)(px) * 0x10000) / SCALE_F(s)))
 #define DEMO_F_TO_PX(d,s)  (FX_MUL((d), (s)) >> DEMO_FRAC)
 
 #endif /* RELIC_H */
