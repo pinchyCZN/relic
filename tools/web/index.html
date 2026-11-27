@@ -161,6 +161,9 @@
       <tr><td class="k">q esc</td><td>stop</td></tr>
       <tr><td class="k">drag</td><td>swing the view, in the scenes that
         take one</td></tr>
+      <tr><td class="k">c middle</td><td>look hold: a drag stays where you
+        leave it, and drag after drag turns a full circle</td></tr>
+      <tr><td class="k">right</td><td>put the view back to rest</td></tr>
     </table>
 
     <p>In the credits gallery:</p>
@@ -171,7 +174,7 @@
         it</td></tr>
       <tr><td class="k">wheel</td><td>closer and further - height, in the
         temple</td></tr>
-      <tr><td class="k">middle</td><td>put it all back to rest</td></tr>
+      <tr><td class="k">right</td><td>put it all back to rest</td></tr>
       <tr><td class="k">z</td><td>hold to cool the orb; restart a burn;
         walk forward in the temple</td></tr>
       <tr><td class="k">x</td><td>walk back in the temple</td></tr>
@@ -179,8 +182,11 @@
 
     <p class="note">A drag in the demo's own scenes only swings the
       view and never touches what the demo is doing; letting go eases
-      back to the recorded camera. The gallery is the exception - its
-      orbit holds where you leave it.</p>
+      back to the recorded camera, unless the look hold is on. The hold
+      is kept relative to the demo's camera, which goes on moving, and
+      is dropped at each new scene. The gallery is the exception - its
+      orbit holds where you leave it, and the look hold does not apply
+      there.</p>
 
     <h2>SOURCE</h2>
     <p><a href="https://github.com/pinchyCZN/relic">pinchyCZN/relic</a></p>
@@ -328,6 +334,15 @@
   document.getElementById('go').addEventListener('click',
     function (e) { e.stopPropagation(); begin(); });
   canvas.addEventListener('click', function () { canvas.focus(); });
+
+  /* THE RIGHT AND MIDDLE BUTTONS ARE THE DEMO'S, so the browser's menu
+     and its middle-click autoscroll must not take them. */
+  canvas.addEventListener('contextmenu', function (e) {
+    e.preventDefault();
+  });
+  canvas.addEventListener('mousedown', function (e) {
+    if (e.button === 1) e.preventDefault();
+  });
 
   /* THE CONTROLS HAND BACK THE KEYBOARD. A checkbox or a slider keeps
      focus once clicked, and the demo would then hear nothing. */

@@ -469,10 +469,10 @@ static s32 spline_head(s32 key, s32 t)
  * neither has to be taught to take a value. */
 static void te_look(void)
 {
-	s32 x = 0, y = 0;
+	s32 x, y;
 
-	Demo_Drag((int *)0, &x, &y);
-	g_heading -= (x * TE_LOOK_YAW) >> 16;
+	Demo_Look(&x, &y);
+	g_heading -= (s32)((((s64)x * TE_LOOK_YAW) >> 16) % TE_HEADINGS);
 	g_horizon += (y * TE_LOOK_PITCH) >> 16;
 	while (g_heading >= TE_HEADINGS) g_heading -= TE_HEADINGS;
 	while (g_heading < 0L) g_heading += TE_HEADINGS;

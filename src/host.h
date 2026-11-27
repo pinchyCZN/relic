@@ -83,6 +83,17 @@ s32         Demo_Modes(void);
 void        Demo_SetDrag(int down, s32 x_fx, s32 y_fx);
 void        Demo_Drag(int *down, s32 *x_fx, s32 *y_fx);
 
+/* OURS - THE LOOK HOLD. With it on, a released drag is kept rather
+ * than eased home, and the next drag adds to it, so the yaw winds
+ * round without limit and the pitch stops at full deflection.
+ * Demo_Look is the drag plus what is kept - the reading for a part
+ * that LOOKS; a part that keeps its own state, as c.1 does, reads
+ * Demo_Drag and never sees the hold. A part change or Demo_SetHome
+ * drops what is kept; the mode itself stays. */
+void        Demo_Look(s32 *x_fx, s32 *y_fx);
+void        Demo_SetLookHold(int on);
+int         Demo_LookHold(void);
+
 /* OURS - THE WHEEL AS A RUNNING COUNT, LIMITED NOWHERE. How far a
  * notch travels and where travel has to stop depend on what is being
  * looked at, and only a part knows that. Positive is nearer.

@@ -27,6 +27,8 @@ static s32  g_tick_rem;         /* the 0.8 of 3276.8 carried     */
 static s32  g_modes;
 static int  g_drag_down;        /* the host's pointer gesture    */
 static s32  g_drag_x, g_drag_y; /* 16.16 of a half window        */
+static int  g_look_hold;        /* OURS: a release keeps the look */
+static s32  g_held_x, g_held_y; /* the kept look, same units     */
 static s32  g_wheel;            /* the host's running notch      */
 static int  g_home;             /* this frame's request for rest */
 static s32  g_cycle;            /* the host's running "next"   */
@@ -62,6 +64,14 @@ static void drag_ease(s32 ms)
 	g_drag_y -= (g_drag_y / DRAG_EASE_MS) * ms;
 	if (g_drag_x < DRAG_EASE_MS && g_drag_x > -DRAG_EASE_MS) g_drag_x = 0;
 	if (g_drag_y < DRAG_EASE_MS && g_drag_y > -DRAG_EASE_MS) g_drag_y = 0;
+}
+
+/* OURS - one full deflection, host.h's +-1.0 */
+static s32 clamp_unit(s32 v)
+{
+	if (v >  0x10000L) return  0x10000L;
+	if (v < -0x10000L) return -0x10000L;
+	return v;
 }
 static char g_label[160];
 static int  g_inited;
@@ -344,6 +354,7 @@ static void goto_part(int index)
 	if (n < 1) return;
 	g_part = ((index % n) + n) % n;
 	g_tick = 0;
+	g_held_x = g_held_y = 0;
 	music_follow();
 	g_tick_fx = 0;
 	g_tick_rem = 0;
@@ -458,17 +469,20 @@ s32  Demo_Modes(void)         { return g_frame.modes; }
 /* OURS - src/host.h. A RELEASE KEEPS THE DEFLECTION, because
  * drag_ease has to have something left to bring home; only a held
  * pointer may set one. Full deflection is clamped here rather than
- * in a host, since +-1.0 is this boundary's own definition. */
+ * in a host, since +-1.0 is this boundary's own definition. UNDER
+ * THE LOOK HOLD A RELEASE BANKS IT instead, so nothing eases and the
+ * next press starts from where this one left off. */
 void Demo_SetDrag(int down, s32 x_fx, s32 y_fx)
 {
+	if (!down && g_drag_down && g_look_hold) {
+		g_held_x += g_drag_x;
+		g_held_y = clamp_unit(g_held_y + g_drag_y);
+		g_drag_x = g_drag_y = 0;
+	}
 	g_drag_down = down;
 	if (!down) return;
-	if (x_fx >  0x10000L) x_fx =  0x10000L;
-	if (x_fx < -0x10000L) x_fx = -0x10000L;
-	if (y_fx >  0x10000L) y_fx =  0x10000L;
-	if (y_fx < -0x10000L) y_fx = -0x10000L;
-	g_drag_x = x_fx;
-	g_drag_y = y_fx;
+	g_drag_x = clamp_unit(x_fx);
+	g_drag_y = clamp_unit(y_fx);
 }
 
 /* OURS */
@@ -479,10 +493,32 @@ void Demo_Drag(int *down, s32 *x_fx, s32 *y_fx)
 	if (y_fx) *y_fx = g_drag_y;
 }
 
+/* OURS - src/host.h. The yaw is not clamped, so repeated drags can
+ * wind it round; the pitch is held to one full deflection. */
+void Demo_Look(s32 *x_fx, s32 *y_fx)
+{
+	*x_fx = g_held_x + g_drag_x;
+	*y_fx = clamp_unit(g_held_y + g_drag_y);
+}
+
+/* OURS - src/host.h */
+void Demo_SetLookHold(int on)
+{
+	g_look_hold = on;
+	if (!on) g_held_x = g_held_y = 0;
+}
+int  Demo_LookHold(void)      { return g_look_hold; }
+
 /* OURS - src/host.h */
 void Demo_SetWheel(s32 notch) { g_wheel = notch; }
 s32  Demo_Wheel(void)         { return g_wheel; }
-void Demo_SetHome(void)       { g_home = 1; }
+
+/* OURS - src/host.h. Rest drops the kept look as well. */
+void Demo_SetHome(void)
+{
+	g_home = 1;
+	g_held_x = g_held_y = 0;
+}
 /* OURS - src/host.h */
 void Demo_SetCycle(s32 n)     { g_cycle = n; }
 s32  Demo_Cycle(void)         { return g_cycle; }

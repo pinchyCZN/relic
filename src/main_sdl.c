@@ -22,10 +22,13 @@
  * Keys: [ ] step mark, space pause, . single frame, f fast forward
  * while held, r render divisor, i subpixel, m mute, + and - volume
  * in tens, q quit. Left-drag swings the camera in parts 2.3b, 2.4,
- * 2.7, 2.10, 2.11 and 2.13, and springs back on release; on c.1 it
- * orbits what is shown and stays put, the wheel dollies it, and the
- * middle button puts the lot back to rest. Tab or Enter shows the
- * next thing on c.1, shift the previous, and z and x are held.
+ * 2.7, 2.10, 2.11, 2.13 and 2.14, and springs back on release; c or
+ * the middle button toggles the look hold, which keeps it instead, so
+ * drag after drag turns a full circle. On c.1 the drag orbits what is
+ * shown and stays put, the wheel dollies it, and the hold does not
+ * apply. The right button puts either back to rest. Tab or Enter
+ * shows the next thing on c.1, shift the previous, and z and x are
+ * held.
  *
  * F OVERRIDES PAUSE, so it doubles as a scrub from a stopped frame.
  * Its KEYDOWN repeats while held, which is why setting it is
@@ -111,9 +114,10 @@ static void title(void)
 	if (!Music_Playing()) strcpy(vol, "  [no module]");
 	else if (g_muted) strcpy(vol, "  [muted]");
 	else sprintf(vol, "  [vol %ld%%]", (long)g_vol);
-	sprintf(buf, "RELIC  -  %s  [%s]%s%s%s", Demo_PartLabel(),
+	sprintf(buf, "RELIC  -  %s  [%s]%s%s%s%s", Demo_PartLabel(),
 	        Demo_MarkName(),
 	        (Demo_Modes() & RELIC_MODE_SUBPIXEL) ? "  [subpixel, OURS]" : "",
+	        Demo_LookHold() ? "  [look hold]" : "",
 	        g_ff ? "  [fast forward]" : "", vol);
 	if (g_win) SDL_SetWindowTitle(g_win, buf);
 }
@@ -368,6 +372,10 @@ static void events(void)
 			case SDLK_f:
 				if (!g_ff) { g_ff = 1; title(); }
 				break;
+			case SDLK_c:
+				Demo_SetLookHold(!Demo_LookHold());
+				title();
+				break;
 			case SDLK_i:
 				g_modes_want ^= RELIC_MODE_SUBPIXEL;
 				Demo_SetModes(g_modes_want);
@@ -398,6 +406,9 @@ static void events(void)
 				g_press_y = e.button.y;
 				drag_move(e.button.x, e.button.y);
 			} else if (e.button.button == SDL_BUTTON_MIDDLE) {
+				Demo_SetLookHold(!Demo_LookHold());
+				title();
+			} else if (e.button.button == SDL_BUTTON_RIGHT) {
 				Demo_SetHome();
 			}
 		} else if (e.type == SDL_MOUSEBUTTONUP) {

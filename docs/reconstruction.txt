@@ -350,9 +350,12 @@ Table of Contents
    bookkeeping out again. Two readings of the one gesture exist and
    neither is the host's business:
 
-      Space_Look           springs it back on release and maps full
+      Space_Look           springs it back on release, or keeps it
+                           under the look hold, and maps full
                            deflection to 0x400 of camera yaw -
-                           effects/approach.txt section 8
+                           effects/approach.txt section 8; te_look in
+                           src/part_temple.c reads it the same way,
+                           section 7.4
       src/part_credits.c   keeps it where it was left and maps it to
                            an orbit about a measured pivot -
                            section 7
@@ -372,6 +375,25 @@ Table of Contents
    whatever the host presents at; Demo_Advance already carries the
    host's elapsed milliseconds, so nothing new crosses the boundary
    to drive it.
+
+   THE LOOK HOLD IS A MODE OF THE GESTURE, NOT OF A PART, and it lives
+   in the core beside the ease. With it on, a release BANKS the
+   deflection instead of easing it, and the next drag adds to the
+   bank, so a press continues from where the last one left off
+   rather than snapping back to centre. Demo_Look returns bank plus
+   drag; the yaw is not clamped, so repeated drags wind round, and
+   the pitch stops at one full deflection. A part that LOOKS reads
+   Demo_Look. A part that keeps state of its own reads the raw
+   Demo_Drag and never sees the bank - c.1's orbit already latches
+   its angles at each press, and the bank would count twice.
+
+   THE BANK IS DROPPED at every part change, by Demo_SetHome, and
+   when the mode is switched off; the mode itself survives a part
+   change. The SDL host and the web page bind it to c and the middle
+   button, and Demo_SetHome to the right button, so one button puts
+   both c.1's orbit and a held look back to rest. The web page stops
+   the browser's context menu and middle-click autoscroll on the
+   canvas so those buttons reach SDL.
 
    A MAPPING IS PULLED BY A PART, NEVER PUSHED BY THE HOST, which is
    what keeps one part's control out of another's. The orbit advances
@@ -1413,7 +1435,9 @@ CMODULE1 ITSELF STILL RUNS FAST IN OUR PORT. From its real start
 
    TWO NUMBERS SET HOW FAR A FULL DRAG LOOKS, and nothing else does:
    TE_LOOK_YAW in the heading's own tenths of a degree, 3600 to a
-   turn, and TE_LOOK_PITCH in frame rows out of TE_H.
+   turn, and TE_LOOK_PITCH in frame rows out of TE_H. Under the look
+   hold of section 3.3 the yaw term is reduced modulo 3600 before it
+   is added, so a wound-round look costs the wrap one pass.
 
    THERE IS NO SKY AND SO NOTHING TO PROTECT. A ray that reaches its
    last step without a hit leaves its column at the fog colour, a

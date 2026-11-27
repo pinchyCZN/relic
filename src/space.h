@@ -71,7 +71,8 @@ int  Space_Project(s32 wx, s32 wy, s32 *sx, s32 *sy);
 void Space_SetCamera(s32 yaw, s32 pitch);
 
 /* OURS - A SPACE SCENE'S LOOK AS A CAMERA PAIR, host.h's drag mapped
- * and springing back on release. SPACE_LOOK_MAX is
+ * and springing back on release, or kept under host.h's look hold,
+ * which can turn the yaw a full revolution. SPACE_LOOK_MAX is
  * what full deflection is worth where a revolution is 0x2000: 45
  * degrees, just past a space scene's own half fields so the framing
  * leaves the frame, and short of the yaw where a projected depth

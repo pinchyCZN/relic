@@ -1413,8 +1413,10 @@ Table of Contents
 
    A CONTROL OF OURS, NOT THE DEMO'S. A host may swing a scene's
    camera with the pointer, and the view springs back when the button
-   is let go. The line this sits on is reconstruction.txt section 2:
-   it resamples the demo's own camera and adds no data.
+   is let go - or, under the look hold of reconstruction.txt section
+   3.3, stays, so that drag after drag winds the yaw a full turn. The
+   line this sits on is reconstruction.txt section 2: it resamples
+   the demo's own camera and adds no data.
 
    SIX SCENES READ IT, and the mapping is Space_Look in src/space.c,
    shared rather than copied. A part that does not call it is
@@ -1440,7 +1442,8 @@ Table of Contents
    hardware comparisons are untouched.
 
    WHAT FULL DEFLECTION IS WORTH is 0x400 of the camera's 0x2000
-   revolution - 45 degrees - and two things set it:
+   revolution - 45 degrees - and two things set it for a single
+   drag:
 
    o  It has to carry the framing off the frame, because the bare
       starfield behind the scene is the point of the control. The
@@ -1451,13 +1454,34 @@ Table of Contents
       projected x goes from 55 to 308 and the object's from 106 to
       414 [observed].
 
-   o  It has to stop short of the depth singularity. The sun's
-      rotated depth passes through zero near +70 degrees of total
-      yaw, and Space_Project rejects only AT zero - so a yaw parked
-      just inside that point projects to six figures and FX_MUL
-      overflows on the way to the blitters. The demo's own camera
-      never reaches it because it only ever yaws negative, as far as
-      -0xaca.
+   o  It stops short of the depth singularity. The sun's rotated
+      depth passes through zero near +70 degrees of total yaw, and
+      Space_Project rejects only AT zero - so a yaw parked just inside
+      that point projects the sun to six figures. The demo's own
+      camera never reaches it because it only ever yaws negative, as
+      far as -0xaca.
+
+   THE HOLD GOES THROUGH THE SINGULARITY, and what keeps that safe is
+   arithmetic width, not a limit on the look. FX_MUL and FX_DIV are
+   64-bit, the flare gate's sum is the u32 Flare_Draw itself uses -
+   planet_sun.txt section 6 - and every blitter the sun's position
+   reaches clips after scaling. Gfx_Flare still forms cx << 16 in 32
+   bits, so for the frames the sun sits within a few degrees of the
+   singularity a stray flare can be drawn at a wrapped position; it
+   is clipped and writes nothing outside the frame.
+
+   THE YAW IS FOLDED INTO ONE TURN by Space_Look, because a held look
+   winds it without limit and a scene's yaw * SPACE_LOOK_SKY would
+   overflow. Every read site below is periodic in 0x2000 - each masks
+   its angle, and the sky pan moves a whole number of texture widths
+   per turn - so the fold changes no picture. THE SKY IS NOT A
+   SPHERE: at that gearing one turn crosses the 256-cell texture
+   eight times, so the starfield repeats where the sun and the planet
+   appear once.
+
+   THE PITCH IS HELD TO ONE FULL DEFLECTION even under the hold, 45
+   degrees, because nothing in the backdrop models looking past
+   straight up or down; the sky would only keep scrolling.
 
    THE READ SITES ARE ALL IN THE FRAME ROUTINES, never in the step:
 

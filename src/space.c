@@ -505,13 +505,15 @@ void Space_SetCamera(s32 yaw, s32 pitch)
 
 /* OURS - space.h. host.h's GESTURE, SPRUNG. DOWN IS A NEGATIVE
  * PITCH: Space_Project takes the pitch term off y, so a scene only
- * follows the mouse if a drag down pitches down. */
+ * follows the mouse if a drag down pitches down. The yaw is folded
+ * into one turn - effects/approach.txt 8. */
 void Space_Look(s32 *yaw, s32 *pitch)
 {
-	s32 x = 0, y = 0;
+	s32 x, y, a;
 
-	Demo_Drag((int *)0, &x, &y);
-	*yaw   =  (x * SPACE_LOOK_MAX) >> 16;
+	Demo_Look(&x, &y);
+	a = (s32)(((s64)x * SPACE_LOOK_MAX) >> 16);
+	*yaw   = ((a + 0x1000L) & 0x1fffL) - 0x1000L;
 	*pitch = -((y * SPACE_LOOK_MAX) >> 16);
 }
 
