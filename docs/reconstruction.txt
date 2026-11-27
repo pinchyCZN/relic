@@ -28,6 +28,7 @@ Table of Contents
       3.3. The pointer arrives as a gesture, not as a camera
       3.4. Anything that accumulates belongs to step()
       3.5. A page's handles on the audio, and why it polls
+      3.6. Fullscreen is the page's, and scales the same pixels
    4. The timeline runs on the music
       4.1. ibxm sits behind the same four calls
       4.2. One tune an act, and a third one for the typing
@@ -488,6 +489,29 @@ Table of Contents
    MUTE AND LEVEL ARE KEPT APART HERE, where the keyboard's + also
    clears mute. A page has two controls and one should not move the
    other; the poll shows whatever the keys then do.
+
+3.6.  Fullscreen is the page's, and scales the same pixels
+
+   THE RENDER SIZE DOES NOT CHANGE IN FULLSCREEN. SDL's Emscripten
+   backend adopts the canvas's CSS box as a resolution only when the
+   canvas had a CSS size at window creation - its external_size, in
+   SDL_emscriptenvideo.c of SDL 2.32.10 [verified, emsdk's port] -
+   and tools/web/index.html deliberately gives it none then. So on
+   the resize a fullscreen causes, SDL puts the buffer back to the
+   window's own size, and the page only stretches it: the size
+   chosen at START, scaled, pixelated, and no dearer to draw.
+
+   THE CANVAS BOX IS SIZED TO THE FITTED PICTURE, not left to
+   object-fit. SDL maps the pointer through the element's CSS size,
+   so a box that also covered the bars would scale x and y apart.
+
+   THE PAGE REQUESTS IT, NOT SDL. A browser grants fullscreen only
+   inside a click or key handler, and SDL asks from the main loop,
+   which the browser defers to some later input event. The button
+   and f call the Fullscreen API directly; Esc is the browser's own
+   and cannot be rebound, and fullscreenchange restores the canvas
+   whichever way the page was left. f is therefore unbound in
+   src/main_sdl.c, and fast forward is s in both hosts.
 
 4.  The timeline runs on the music
 

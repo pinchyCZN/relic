@@ -19,7 +19,7 @@
  * THE TUNE COMES OUT OF RELIC.DAT and so loads after Demo_Init;
  * -mod overrides it.
  *
- * Keys: [ ] step mark, space pause, . single frame, f fast forward
+ * Keys: [ ] step mark, space pause, . single frame, s fast forward
  * while held, r render divisor, i subpixel, m mute, + and - volume
  * in tens, q quit. Left-drag swings the camera in parts 2.3b, 2.4,
  * 2.7, 2.10, 2.11, 2.13 and 2.14, and springs back on release; c or
@@ -27,10 +27,10 @@
  * drag after drag turns a full circle. On c.1 the drag orbits what is
  * shown and stays put, the wheel dollies it, and the hold does not
  * apply. The right button puts either back to rest. Tab or Enter
- * shows the next thing on c.1, shift the previous, and z and x are
- * held.
+ * shows the next thing on c.1, shift the previous, z and x are held,
+ * and f is unbound - the web page's fullscreen, reconstruction 3.6.
  *
- * F OVERRIDES PAUSE, so it doubles as a scrub from a stopped frame.
+ * S OVERRIDES PAUSE, so it doubles as a scrub from a stopped frame.
  * Its KEYDOWN repeats while held, which is why setting it is
  * guarded - otherwise the title is rewritten on every event. AND
  * ALT-TAB EATS THE KEYUP: without the focus-lost arm the demo keeps
@@ -65,7 +65,7 @@ static s32 g_tex_w, g_tex_h;
 static int g_running = 1;
 static int g_paused;
 
-/* OURS - ticks a pass while F is held. Twenty is about seven seconds
+/* OURS - ticks a pass while S is held. Twenty is about seven seconds
  * of demo a second at 60 Hz, and the skip costs one render. */
 #define FF_STEPS 20
 static int g_ff;
@@ -369,7 +369,7 @@ static void events(void)
 				if (g_vol > VOL_MIN) g_vol -= VOL_STEP;
 				title();
 				break;
-			case SDLK_f:
+			case SDLK_s:
 				if (!g_ff) { g_ff = 1; title(); }
 				break;
 			case SDLK_c:
@@ -392,7 +392,7 @@ static void events(void)
 				g_hold &= ~DEMO_HOLD_B;
 				Demo_SetHold(g_hold);
 			}
-			if (e.key.keysym.sym == SDLK_f && g_ff) {
+			if (e.key.keysym.sym == SDLK_s && g_ff) {
 				g_ff = 0;
 				title();
 			}

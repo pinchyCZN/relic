@@ -43,6 +43,22 @@
                  cursor: pointer; }
   #audio input[type=range] { width: 160px; vertical-align: middle; }
   #volnum { color: #c8d6e8; min-width: 4em; }
+  #fs { font: inherit; color: #c8d6e8; background: #16203a;
+        border: 1px solid #2b3550; padding: 2px 12px; cursor: pointer;
+        margin-left: auto; }
+  #fs:hover { background: #1d2a4a; }
+  /* FULLSCREEN SCALES THE SAME PIXELS. SDL created the window with no
+     CSS size, so it never adopts the screen as a resolution: the
+     buffer stays at the size chosen, and fitCanvas() gives the canvas
+     a CSS box that only stretches it. The webkit rule is separate
+     because one unknown selector voids a whole rule. */
+  #stage:fullscreen { width: 100vw; height: 100vh; background: #000;
+                      display: flex; align-items: center;
+                      justify-content: center; }
+  #stage:-webkit-full-screen { width: 100vw; height: 100vh;
+                               background: #000; display: flex;
+                               align-items: center;
+                               justify-content: center; }
   #bar { color: #6b7a90; max-width: 1280px; width: 100%; }
   #bar b { color: #c8d6e8; font-weight: normal; }
   #bar .t { color: #c8d6e8; }
@@ -95,12 +111,14 @@
     <label>volume <input type="range" id="vol" min="10" max="100"
                          step="10" value="100"></label>
     <span id="volnum">100%</span>
+    <button id="fs" type="button">fullscreen</button>
   </div>
 
   <div id="bar">
     <span class="t">RELIC</span> - Nerve Axis, Assembly 1998 &nbsp;&nbsp;
     <b>[</b> <b>]</b> part &nbsp; <b>space</b> pause &nbsp;
-    <b>.</b> step &nbsp; <b>f</b> fast forward &nbsp;
+    <b>.</b> step &nbsp; <b>s</b> fast forward &nbsp;
+    <b>f</b> fullscreen &nbsp;
     <b>m</b> mute &nbsp; <b>+ -</b> volume &nbsp;
     <span id="status">loading...</span>
   </div>
@@ -152,13 +170,14 @@
       <tr><td class="k">[ ]</td><td>jump a scene back or on</td></tr>
       <tr><td class="k">space</td><td>pause and resume</td></tr>
       <tr><td class="k">.</td><td>single step one frame while paused</td></tr>
-      <tr><td class="k">f</td><td>fast forward, while held</td></tr>
+      <tr><td class="k">s</td><td>fast forward, while held</td></tr>
+      <tr><td class="k">f</td><td>fullscreen - the same pixels, scaled
+        up to fit; esc comes back</td></tr>
       <tr><td class="k">m</td><td>mute</td></tr>
       <tr><td class="k">+ -</td><td>volume, ten steps</td></tr>
       <tr><td class="k">r</td><td>render divisor, 1 to 4 - cheaper and
         softer</td></tr>
       <tr><td class="k">i</td><td>subpixel placement, above scale 1</td></tr>
-      <tr><td class="k">q esc</td><td>stop</td></tr>
       <tr><td class="k">drag</td><td>swing the view, in the scenes that
         take one</td></tr>
       <tr><td class="k">c middle</td><td>look hold: a drag stays where you
@@ -344,6 +363,72 @@
     if (e.button === 1) e.preventDefault();
   });
 
+  /* FULLSCREEN IS THE PAGE'S, NOT SDL'S. A browser grants it only
+     inside a click or a key handler, and SDL's own request is made
+     from the main loop and deferred to some later event, so the
+     button and f call the API here, directly. Esc is the browser's
+     and leaves on its own; fullscreenchange tidies up either way. */
+  var fsEl = document.getElementById('fs');
+
+  function fsElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement
+           || null;
+  }
+
+  function fsSupported() {
+    return !!(stage.requestFullscreen || stage.webkitRequestFullscreen)
+           && (document.fullscreenEnabled !== false
+               || document.webkitFullscreenEnabled);
+  }
+
+  /* THE CANVAS BOX IS EXACTLY THE FITTED PICTURE, never object-fit:
+     SDL maps the mouse through the element's CSS size, so a box that
+     took in the bars too would scale x and y by different amounts.
+     The buffer is left alone - canvas.width is still what SDL drew. */
+  function fitCanvas() {
+    var sw = stage.clientWidth, sh = stage.clientHeight;
+    var cw = canvas.width, ch = canvas.height, k;
+
+    if (!fsElement() || cw < 1 || ch < 1) return;
+    k = Math.min(sw / cw, sh / ch);
+    canvas.style.width = Math.floor(cw * k) + 'px';
+    canvas.style.height = Math.floor(ch * k) + 'px';
+  }
+
+  function fsToggle() {
+    if (!fsSupported()) return;
+    if (fsElement()) {
+      if (document.exitFullscreen) document.exitFullscreen();
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    } else if (stage.requestFullscreen) {
+      stage.requestFullscreen().catch(function (e) {
+        fail('fullscreen: ' + e);
+      });
+    } else {
+      stage.webkitRequestFullscreen();
+    }
+  }
+
+  function fsChanged() {
+    if (fsElement()) {
+      fitCanvas();
+      fsEl.textContent = 'window';
+    } else {
+      canvas.style.width = '';
+      canvas.style.height = '';
+      fsEl.textContent = 'fullscreen';
+    }
+    canvas.focus();
+  }
+
+  if (!fsSupported()) fsEl.style.display = 'none';
+  fsEl.addEventListener('click', function () {
+    if (started) fsToggle();
+  });
+  document.addEventListener('fullscreenchange', fsChanged);
+  document.addEventListener('webkitfullscreenchange', fsChanged);
+  window.addEventListener('resize', fitCanvas);
+
   /* THE CONTROLS HAND BACK THE KEYBOARD. A checkbox or a slider keeps
      focus once clicked, and the demo would then hear nothing. */
   muteEl.addEventListener('change', function () {
@@ -363,6 +448,11 @@
   window.addEventListener('keydown', function (e) {
     if (document.activeElement !== canvas) return;
     if (e.key === ' ' || e.key.indexOf('Arrow') === 0) e.preventDefault();
+    if ((e.key === 'f' || e.key === 'F') && !e.repeat && started
+        && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      fsToggle();
+    }
   }, false);
 </script>
 <script async src="relic.js?@BUILD@"></script>

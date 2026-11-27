@@ -79,13 +79,16 @@ not shipping a web build.
 |---|---|
 | `[` `]` | jump a scene back or on |
 | `space` | pause, `.` steps one frame |
-| `f` | fast forward, while held |
+| `s` | fast forward, while held |
 | `m` / `+` `-` | mute, volume |
 | `r` | render divisor, 1 to 4 - cheaper and softer |
 | `drag` | swing the view, in the scenes that take one |
+| `c` / middle-click | look hold: a drag stays put, and drag after drag turns a full circle |
+| right-click | put the view back to rest |
+| `f` | fullscreen, web build only - the same pixels scaled up; `esc` returns |
 
 In the gallery past the end: `tab` for the next thing to look at, drag to orbit,
-wheel to dolly, middle-click for rest, `z` and `x` per thing.
+wheel to dolly, right-click for rest, `z` and `x` per thing.
 
 ## Reading it
 
